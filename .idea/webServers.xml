@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="3a50fd57-5c0d-42be-92cb-6b0f3eca0549" name="yanchengwang">
+        <fileTransfer rootFolder="/mntnfs/cui_data4/yanchengwang/" accessType="SFTP" host="10.26.6.81" port="22" sshConfigId="52060d4a-f844-42b6-91fd-ee5236acba40" sshConfig="yanchengwang@10.26.6.81:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

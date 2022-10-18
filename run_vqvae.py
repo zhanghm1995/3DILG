@@ -21,6 +21,7 @@ from utils import NativeScalerWithGradNormCount as NativeScaler
 
 import modeling_vqvae
 
+
 def get_args():
     parser = argparse.ArgumentParser('VQVAE', add_help=False)
     parser.add_argument('--batch_size', default=128, type=int)
@@ -29,9 +30,9 @@ def get_args():
     parser.add_argument('--save_ckpt_freq', default=20, type=int)
 
     # Model parameters
-    parser.add_argument('--model', default='vqvae_128', type=str,
+    parser.add_argument('--model', default='vqvae_256_1024_1024', type=str,
                         metavar='MODEL', help='Name of model to train')
-    parser.add_argument('--point_cloud_size', default=2048, type=int,
+    parser.add_argument('--point_cloud_size', default=1024, type=int,
                         help='images point cloud size')
 
     parser.add_argument('--drop', type=float, default=0.0, metavar='PCT',
@@ -48,11 +49,11 @@ def get_args():
     # Optimizer parameters
     parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
                         help='Optimizer (default: "adamw"')
-    parser.add_argument('--opt_eps', default=1e-8, type=float, metavar='EPSILON', # 1e-6
+    parser.add_argument('--opt_eps', default=1e-8, type=float, metavar='EPSILON',  # 1e-6
                         help='Optimizer Epsilon (default: 1e-8)')
     parser.add_argument('--opt_betas', default=None, type=float, nargs='+', metavar='BETA',
                         help='Optimizer Betas (default: None, use opt default)')
-    parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM', #
+    parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',  #
                         help='Clip gradient norm (default: None, no clipping)')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                         help='SGD momentum (default: 0.9)')
@@ -77,7 +78,7 @@ def get_args():
                         help='num of steps to warmup LR, will overload warmup_epochs if set > 0')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='/your/data/path', type=str,
+    parser.add_argument('--data_path', default='./data/train/PUGAN_poisson_256_poisson_1024.h5', type=str,
                         help='dataset path')
     parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
@@ -91,7 +92,7 @@ def get_args():
     parser.add_argument('--auto_resume', action='store_true')
     parser.add_argument('--no_auto_resume', action='store_false', dest='auto_resume')
     parser.set_defaults(auto_resume=True)
-    
+
     parser.add_argument('--save_ckpt', action='store_true')
     parser.add_argument('--no_save_ckpt', action='store_false', dest='save_ckpt')
     parser.set_defaults(save_ckpt=True)
@@ -115,13 +116,15 @@ def get_args():
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
-    
+    parser.add_argument('--distributed', default=False)
+
     ds_init = None
     return parser.parse_args(), ds_init
 
+
 def main(args, ds_init):
     utils.init_distributed_mode(args)
-
+    args.distributed = False
     print(args)
 
     device = torch.device(args.device)
@@ -133,13 +136,13 @@ def main(args, ds_init):
 
     cudnn.benchmark = True
 
-    dataset_train  = build_shape_surface_occupancy_dataset('train', args=args)
+    dataset_train = build_shape_surface_occupancy_dataset('train', args=args)
     if args.disable_eval:
         dataset_val = None
     else:
         dataset_val = build_shape_surface_occupancy_dataset('val', args=args)
 
-    if True:  # args.distributed:
+    if args.distributed: #True:  #
         num_tasks = utils.get_world_size()
         global_rank = utils.get_rank()
         sampler_train = torch.utils.data.DistributedSampler(
@@ -158,7 +161,7 @@ def main(args, ds_init):
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-
+    global_rank = 0
     if global_rank == 0 and args.log_dir is not None:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = utils.TensorboardLogger(log_dir=args.log_dir)
@@ -219,7 +222,8 @@ def main(args, ds_init):
     # num_layers = model_without_ddp.get_num_layers()
     num_layers = 12
     if args.layer_decay < 1.0:
-        assigner = LayerDecayValueAssigner(list(args.layer_decay ** (num_layers + 1 - i) for i in range(num_layers + 2)))
+        assigner = LayerDecayValueAssigner(
+            list(args.layer_decay ** (num_layers + 1 - i) for i in range(num_layers + 2)))
     else:
         assigner = None
 
@@ -235,9 +239,9 @@ def main(args, ds_init):
 
     optimizer = create_optimizer(
         args, model_without_ddp, skip_list=skip_weight_decay_list,
-        get_num_layer=assigner.get_layer_id if assigner is not None else None, 
+        get_num_layer=assigner.get_layer_id if assigner is not None else None,
         get_layer_scale=assigner.get_scale if assigner is not None else None,
-        )
+    )
     loss_scaler = NativeScaler()
 
     print("Use step level LR scheduler!")
@@ -295,9 +299,9 @@ def main(args, ds_init):
                 log_writer.update(test_loss=test_stats['loss'], head="perf", step=epoch)
 
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
-                        'epoch': epoch,
-                        'n_parameters': n_parameters}
+                         **{f'test_{k}': v for k, v in test_stats.items()},
+                         'epoch': epoch,
+                         'n_parameters': n_parameters}
         else:
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                          # **{f'test_{k}': v for k, v in test_stats.items()},
@@ -313,6 +317,7 @@ def main(args, ds_init):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+
 
 if __name__ == '__main__':
     opts, ds_init = get_args()

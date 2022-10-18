@@ -4,6 +4,7 @@ import torch
 from torchvision import datasets, transforms
 
 from shapenet import ShapeNet
+from data_loader import PUGAN_Dataset, xyz_Dataset_Whole
 
 class AxisScaling(object):
     def __init__(self, interval=(0.75, 1.25), jitter=True):
@@ -30,10 +31,12 @@ class AxisScaling(object):
 
 def build_shape_surface_occupancy_dataset(split, args):
     if split == 'train':
-        transform = AxisScaling((0.75, 1.25), True)
-        return ShapeNet(args.data_path, split=split, transform=transform, sampling=True, num_samples=1024, return_surface=True, surface_sampling=True, pc_size=args.point_cloud_size)
+        # transform = AxisScaling((0.75, 1.25), True)
+        return PUGAN_Dataset(args.data_path)
+        # return ShapeNet(args.data_path, split=split, transform=transform, sampling=True, num_samples=1024, return_surface=True, surface_sampling=True, pc_size=args.point_cloud_size)
     elif split == 'val':
-        return ShapeNet(args.data_path, split=split, transform=None, sampling=False, return_surface=True, surface_sampling=True, pc_size=args.point_cloud_size)
+        return xyz_Dataset_Whole(data_dir='./data/test/gt_FPS_8192/', n_input=2048)
+        # return ShapeNet(args.data_path, split=split, transform=None, sampling=False, return_surface=True, surface_sampling=True, pc_size=args.point_cloud_size)
     else:
         return ShapeNet(args.data_path, split=split, transform=None, sampling=False, return_surface=True, surface_sampling=True, pc_size=args.point_cloud_size)
 
