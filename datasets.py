@@ -38,5 +38,17 @@ def build_shape_surface_occupancy_dataset(split, args):
         return ShapeNet(args.data_path, split=split, transform=None, sampling=False, return_surface=True, surface_sampling=True, pc_size=args.point_cloud_size)
 
 
+def build_upsampling_dataset(split, args):
+    from pu_dataset import PUGAN_Dataset
+
+    if split == 'train':
+        # transform = AxisScaling((0.75, 1.25), True)
+        return PUGAN_Dataset(args.data_path, split="./data/train/train.txt", isTrain=True)
+    elif split == 'val':
+        return PUGAN_Dataset(args.data_path, split="./data/train/val.txt", isTrain=False)
+    else:
+        raise NotImplementedError
+
+
 if __name__ == '__main__':
     pass

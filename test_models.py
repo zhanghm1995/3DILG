@@ -19,19 +19,45 @@ import torch
 
 from modeling_vqvae import Autoencoder
 
-model = Autoencoder(N=512, K=1024, M=2048)
 
-B = 5
+def test_Autoencoder():
+    model = Autoencoder(N=512, K=1024, M=2048)
 
-surface = torch.rand(B, 2048, 3)
-points = torch.rand(B, 4096, 3)
-surface = surface * 2.0 - 1
-points = points * 2.0 - 1
+    B = 5
 
-print(surface.min(), surface.max())
-print(points.min(), points.max())
+    surface = torch.rand(B, 2048, 3)
+    points = torch.rand(B, 4096, 3)
+    surface = surface * 2.0 - 1
+    points = points * 2.0 - 1
+
+    print(surface.min(), surface.max())
+    print(points.min(), points.max())
 
 
-pred = model(surface, points)
-logits, z_e_x, z_q_x, sigma, loss_vq, perplexity = pred
-print(logits.shape, logits.min(), logits.max())
+    pred = model(surface, points)
+    logits, z_e_x, z_q_x, sigma, loss_vq, perplexity = pred
+    print(logits.shape, logits.min(), logits.max())
+
+
+def test_my_Autoencoder():
+    model = Autoencoder(N=256, K=1024, M=1024, num_neighbors=16)
+
+    B = 5
+
+    surface = torch.rand(B, 1024, 3)
+    points = torch.rand(B, 1024, 3)
+    surface = surface * 2.0 - 1
+    points = points * 2.0 - 1
+
+    print(surface.min(), surface.max())
+    print(points.min(), points.max())
+
+
+    pred = model(surface, points)
+    logits, z_e_x, z_q_x, sigma, loss_vq, perplexity = pred
+    print(logits.shape, logits.min(), logits.max())
+
+
+if __name__ == "__main__":
+    test_my_Autoencoder()
+    

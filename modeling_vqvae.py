@@ -494,7 +494,7 @@ class PointConv(torch.nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, N, dim=128, M=2048):
+    def __init__(self, N, dim=128, M=2048, num_neighbors=32):
         super().__init__()
 
         self.embed = Seq(Lin(48+3, dim))#, nn.GELU(), Lin(128, 128))
@@ -533,7 +533,7 @@ class Encoder(nn.Module):
 
         self.M = M
         self.ratio = N / M 
-        self.k = 32
+        self.k = num_neighbors
 
     def forward(self, pc):
         # pc: B x N x D
@@ -568,10 +568,10 @@ class Encoder(nn.Module):
         return out, pos
 
 class Autoencoder(nn.Module):
-    def __init__(self, N, K=512, dim=256, M=2048):
+    def __init__(self, N, K=512, dim=256, M=2048, num_neighbors=32):
         super().__init__()
 
-        self.encoder = Encoder(N=N, dim=dim, M=M)
+        self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
         
         self.decoder = Decoder(latent_channel=dim)
 
@@ -658,6 +658,22 @@ def vqvae_512_1024_2048(pretrained=False, **kwargs):
         N=512,
         K=1024,
         M=2048,
+        **kwargs)
+    model.default_cfg = _cfg()
+    if pretrained:
+        checkpoint = torch.load(
+            kwargs["init_ckpt"], map_location="cpu"
+        )
+        model.load_state_dict(checkpoint["model"])
+    return model
+
+
+@register_model
+def vqpc_512_1024_2048(pretrained=False, **kwargs):
+    model = Autoencoder(
+        N=256,
+        K=1024,
+        M=1024,
         **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
