@@ -513,7 +513,6 @@ class PUDecoder(nn.Module):
         embeddings = embed(centers, self.basis)
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
         latents = self.transformer(latents, embeddings) # (B, M, 256)
-        print(latents.shape)
 
         offset = self.out_layer(latents) # (B, M, 12)
         offset = rearrange(offset, 'b n (r c) -> b n r c', c=3)
@@ -666,7 +665,7 @@ class Autoencoder(nn.Module):
 
 
 class PUAutoencoder(nn.Module):
-    def __init__(self, N, K=512, dim=256, M=2048, num_neighbors=32):
+    def __init__(self, N, K=512, dim=256, M=2048, num_neighbors=32, **kwargs):
         super().__init__()
 
         self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
@@ -766,7 +765,7 @@ def vqvae_512_1024_2048(pretrained=False, **kwargs):
 
 @register_model
 def vqpc_512_1024_2048(pretrained=False, **kwargs):
-    model = Autoencoder(
+    model = PUAutoencoder(
         N=256,
         K=1024,
         M=1024,

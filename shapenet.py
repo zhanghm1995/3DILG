@@ -74,8 +74,8 @@ category_ids = {
 
 import torchvision.transforms as T
 
-import clip
-_, preprocess = clip.load("ViT-B/32")
+# import clip
+# _, preprocess = clip.load("ViT-B/32")
 
 class ShapeNet(data.Dataset):
     def __init__(self, dataset_folder, split, categories=None, transform=None, sampling=True, num_samples=4096, return_surface=True, surface_sampling=True, pc_size=2048):
