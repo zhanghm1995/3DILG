@@ -23,7 +23,10 @@ from torch_scatter import scatter_max
 
 from einops import rearrange
 from pugan_decoder import up_projection_unit
-
+import tqdm
+# from pointnet2.utils.pointnet2_utils import FurthestPointSampling, knn_point
+from pointnet2.utils import pointnet2_utils
+from vis_util import save_xyz_file
 
 def _cfg(url='', **kwargs):
     return {
@@ -560,6 +563,7 @@ class Encoder(nn.Module):
         self.M = M
         self.ratio = N / M
         self.k = 32
+        self.N = N
 
     def forward(self, pc):
         # pc: B x N x D
@@ -602,6 +606,7 @@ class Autoencoder(nn.Module):
         self.decoder = Decoder(latent_channel=dim)
 
         self.codebook = VectorQuantizer2(K, dim)
+        self.M = M
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -617,6 +622,57 @@ class Autoencoder(nn.Module):
         z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
         # print(z_q_x_st.shape, loss_vq.item(), perplexity.item(), encodings.shape)
         return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
+
+    def pc_prediction(self, points):
+        ## get patch seed from farthestsampling
+        # points = tf.convert_to_tensor(np.expand_dims(pc,axis=0),dtype=tf.float32)
+        # start= time()
+        # print('------------------patch_num_point:',self.opts.patch_num_point)
+        seed1_num = int(points.size()[1] / self.M)  # self.opts.patch_num_point * self.opts.patch_num_ratio
+
+        ## FPS sampling
+
+        # seed = FurthestPointSampling(points, seed1_num)#.eval()[0] (B, npoint)
+        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed1_num)  # .permute(0, 2, 1).contiguous()
+        seed_xyz = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
+        seed_xyz = seed_xyz.permute(0, 2, 1).contiguous()
+        # seed_list = seed[:seed1_num]
+        # print("farthest distance sampling cost", time() - start)
+        # print("number of patches: %d" % len(seed_list))
+        input_list = []
+        up_point_list = []
+        # print('=====================', self.M, seed_xyz.size(), points.size()) # 1024 torch.Size([1, 8, 3]) torch.Size([1, 8192, 3])
+        top_k_neareast_idx = pointnet2_utils.knn_point(self.M, seed_xyz,
+                                                       points)  # top_k_neareast_idx: (batch_size, npoint1, k) int32 array, indices to input points
+        # print('================', top_k_neareast_idx.size())  # torch.Size([1, 8, 1024])
+        result = torch.empty(1, 1024, 3).cuda()
+        for i in range(top_k_neareast_idx.size()[1]):
+            idx = top_k_neareast_idx[:, i, :]  # torch.Size([1, 1024])
+            patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
+                                                     idx)
+            patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
+
+            # print(patch)
+            up_point = self(patch)
+
+            # up_point = np.squeeze(up_point, axis=0)
+            input_list.append(patch)
+            # print(type(result), type(up_point))
+            result = torch.cat((result, up_point[0]), dim=1)
+            # up_point_list.append(up_point)
+
+        # patches = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
+        #                                            top_k_neareast_idx)  # points: torch.Size([1, 8192, 3])
+        # print('================', patches.size())  # torch.Size([1, 8192, 8])
+        # patches = pointnet2_utils.extract_knn_patch(seed_xyz, points, self.N) #self.opts.patch_num_point
+
+        # for point in tqdm(patches, total=patches):
+        #     up_point = self(point)
+        #     # up_point = np.squeeze(up_point, axis=0)
+        #     input_list.append(point)
+        #     up_point_list.append(up_point)
+
+        return input_list, result
 
     def forward(self, x):
         z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)

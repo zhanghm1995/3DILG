@@ -11,6 +11,8 @@ import utils
 from loss import Loss
 from einops import repeat, rearrange
 from vis_util import save_xyz_file
+from pointnet2.utils import pointnet2_utils
+
 
 def train_batch(model, GT_points, radius):
     Loss_fn = Loss()
@@ -20,6 +22,7 @@ def train_batch(model, GT_points, radius):
     # print('======================',outputs.size(), outputs.dtype) #torch.Size([32, 1024, 3]) torch.float16
     repulsion_loss = 10 * Loss_fn.get_repulsion_loss(outputs)
     emd_loss = 100 * Loss_fn.get_emd_loss(outputs, GT_points, radius)
+    loss_vq = 10 * loss_vq
 
     # loss = loss_vol + 0.1 * loss_near + loss_vq + 0.0001 * loss_sigma
     loss = emd_loss + repulsion_loss + loss_vq
@@ -59,12 +62,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 if wd_schedule_values is not None and param_group["weight_decay"] > 0:
                     param_group["weight_decay"] = wd_schedule_values[it]
 
-
         # points = GT_points.float().to(device, non_blocking=True).contiguous()
         # radius = radius.float().to(device, non_blocking=True).contiguous()
         points = GT_points[..., :3].float().to(device, non_blocking=True).contiguous()
         radius = radius.float().to(device, non_blocking=True).contiguous()
-
 
         if loss_scaler is None:
             raise NotImplementedError
@@ -137,6 +138,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             log_writer.update(grad_norm=grad_norm, head="opt")
             log_writer.update(loss_emd=loss_emd, head="opt")
             log_writer.update(loss_vq=loss_vq, head="opt")
+            log_writer.update(loss_repul=loss_repul, head="opt")
 
             log_writer.set_step()
 
@@ -147,14 +149,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device,visualize=True):
+def evaluate(data_loader, model, device, visualize=True):
     # criterion = torch.nn.BCEWithLogitsLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
-
+    num_GT_points = 8192
     model.eval()
-
     for batch in metric_logger.log_every(data_loader, 200, header):
         points, normalized_points_GT, normalized_points_LR, furthest_dist, centroid, name = batch
         # points, labels, surface, _ = batch
@@ -162,26 +163,40 @@ def evaluate(data_loader, model, device,visualize=True):
         ori_GT = points.float().to(device, non_blocking=True).contiguous()
         normalized_points_GT = normalized_points_GT.float().to(device, non_blocking=True).contiguous()
         radius = furthest_dist.float().to(device, non_blocking=True).contiguous()
-        radius = repeat(radius, 'r -> r w', w=1).contiguous()
+        # radius = repeat(radius, 'r -> r w', w=1).contiguous()
         centroid = centroid.float().to(device, non_blocking=True).contiguous()
 
         with torch.cuda.amp.autocast():
             N = 100000
-            _, pred, emd_loss, _, _ = model(normalized_points_GT, phase='val')  # TODO implement the val in model
-            # loss = criterion(output, labels)
-            pred = pred.float().cuda().contiguous()
-            cd = Loss.get_cd_loss(pred=pred, gt=ori_GT, pcd_radius=radius, weights=[0.5, 0.5])
-        batch_size = points.shape[0]
-        metric_logger.update(emd_loss=emd_loss.item())
-        metric_logger.meters['cd'].update(cd.item(), n=batch_size)
+            input_list, pred_pc = model.pc_prediction(normalized_points_GT)
+            # pred_pc = torch.stack(pred_list, dim=1)  # torch.cat(pred_list, dim=1)
+            # pred_pc = pred_pc.permute(0, 2, 1).contiguous()
+            # path = os.path.join(self.opts.out_folder, point_path.split('/')[-1][:-4] + '.ply')
+            print('=======================', pred_pc.size())
+            idx = pointnet2_utils.furthest_point_sample(pred_pc, num_GT_points)
+            pred_pc = pointnet2_utils.gather_operation(pred_pc.permute(0, 2, 1).contiguous(), idx)
+            # pred_pc = pred_pc[idx, 0:3]
+            # pred_pc = pred_pc.permute(0, 2, 1).contiguous()
+            # radius = repeat(radius, 'r -> r w h', w=1, h=1).contiguous()
+            # pred_pc = (pred_pc * radius) + centroid.unsqueeze(2).repeat(1, 1, 8192)
+            pred_pc = pred_pc.permute(0, 2, 1).contiguous()
+            print('+++++++++++++++++++++', pred_pc.size())
 
-        if visualize:
-            radius = repeat(radius, 'r w -> r w h', h=1).contiguous()
-            pred = pred.permute(0, 2, 1).contiguous()
-            pred = pred * radius + centroid.unsqueeze(2).repeat(1, 1, 8192)  # torch.Size([4, 3, 8192])
-            pred = pred.permute(0, 2, 1).data.cpu().numpy()
+            # _, pred, emd_loss, _, _ = model(normalized_points_GT, phase='val')  # TODO implement the val in model
+            # loss = criterion(output, labels)
+            # pred = pred_pc.float().cuda().contiguous()
+            # cd = Loss.get_cd_loss(pred=pred, gt=ori_GT, pcd_radius=radius, weights=[0.5, 0.5])
+            batch_size = points.shape[0]
+            # metric_logger.update(emd_loss=emd_loss.item())
+            # metric_logger.meters['cd'].update(cd.item(), n=batch_size)
+            # if visualize:
+            # radius = repeat(radius, 'r w -> r w h', h=1).contiguous()
+            # pred = pred.permute(0, 2, 1).contiguous()
+            # pred = pred * radius + centroid.unsqueeze(2).repeat(1, 1, 8192)  # torch.Size([4, 3, 8192])
+            # pred = pred_pc.permute(0, 2, 1).data.cpu().numpy()
+            pred = pred_pc.data.cpu().numpy()
             for i in range(batch_size):
-                save_file = 'outputs/{}/{}.xyz'.format('stage1', name[i])
+                save_file = 'visualize/{}/{}.xyz'.format('stage1', name[i])
                 save_xyz_file(pred[i, ...], save_file)
         # pred = torch.zeros_like(output)
         # pred[output >= 0] = 1
@@ -193,8 +208,10 @@ def evaluate(data_loader, model, device,visualize=True):
         # iou = intersection * 1.0 / union + 1e-5
         # iou = iou.mean()
 
-    metric_logger.synchronize_between_processes()
+    # metric_logger.synchronize_between_processes()
 
-    print('* cd{cd.global_avg:.4f} loss {losses.global_avg:.3f}'
-          .format(cd=metric_logger.cd, losses=metric_logger.emd_loss))
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    # print('* cd{cd.global_avg:.4f} loss {losses.global_avg:.3f}'
+    #       .format(cd=metric_logger.cd, losses=metric_logger.emd_loss))
+    # print('* cd{cd.global_avg:.4f} loss {losses.global_avg:.3f}'
+    #       .format(cd=cd, losses=emd_loss))
+    # return {k: meter.global_avg for k, meter in metric_logger.meters.items()}

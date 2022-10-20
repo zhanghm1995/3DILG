@@ -8,3 +8,5 @@ __pycache__
 output/
 image/
 blender*
+/output/
+/logs/
