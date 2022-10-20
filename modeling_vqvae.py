@@ -22,16 +22,25 @@ from torch_cluster import fps, knn
 from torch_scatter import scatter_max
 
 from einops import rearrange
+from pointnet2.utils.pointnet2_utils import furthest_point_sample
+from math import log
+from dis_pu.layers import (
+    FeatureExtractor,
+    DuplicateUp,
+    CoordinateRegressor,
+    PointShuffle)
 
 def _cfg(url='', **kwargs):
     return {
     }
+
 
 class VectorQuantizer2(nn.Module):
     """
     Improved version over VectorQuantizer, can be used as a drop-in replacement. Mostly
     avoids costly matrix multiplications and allows for post-hoc remapping of indices.
     """
+
     # NOTE: due to a bug the beta term was applied to the wrong term. for
     # backwards compatibility we use the buggy version by default, but you can
     # specify legacy=False to fix it.
@@ -51,10 +60,10 @@ class VectorQuantizer2(nn.Module):
         if self.remap is not None:
             self.register_buffer("used", torch.tensor(np.load(self.remap)))
             self.re_embed = self.used.shape[0]
-            self.unknown_index = unknown_index # "random" or "extra" or integer
+            self.unknown_index = unknown_index  # "random" or "extra" or integer
             if self.unknown_index == "extra":
                 self.unknown_index = self.re_embed
-                self.re_embed = self.re_embed+1
+                self.re_embed = self.re_embed + 1
             print(f"Remapping {self.n_e} indices to {self.re_embed} indices. "
                   f"Using {self.unknown_index} for unknown indices.")
         else:
@@ -64,39 +73,39 @@ class VectorQuantizer2(nn.Module):
 
     def remap_to_used(self, inds):
         ishape = inds.shape
-        assert len(ishape)>1
-        inds = inds.reshape(ishape[0],-1)
+        assert len(ishape) > 1
+        inds = inds.reshape(ishape[0], -1)
         used = self.used.to(inds)
-        match = (inds[:,:,None]==used[None,None,...]).long()
+        match = (inds[:, :, None] == used[None, None, ...]).long()
         new = match.argmax(-1)
-        unknown = match.sum(2)<1
+        unknown = match.sum(2) < 1
         if self.unknown_index == "random":
-            new[unknown]=torch.randint(0,self.re_embed,size=new[unknown].shape).to(device=new.device)
+            new[unknown] = torch.randint(0, self.re_embed, size=new[unknown].shape).to(device=new.device)
         else:
             new[unknown] = self.unknown_index
         return new.reshape(ishape)
 
     def unmap_to_all(self, inds):
         ishape = inds.shape
-        assert len(ishape)>1
-        inds = inds.reshape(ishape[0],-1)
+        assert len(ishape) > 1
+        inds = inds.reshape(ishape[0], -1)
         used = self.used.to(inds)
-        if self.re_embed > self.used.shape[0]: # extra token
-            inds[inds>=self.used.shape[0]] = 0 # simply set to zero
-        back=torch.gather(used[None,:][inds.shape[0]*[0],:], 1, inds)
+        if self.re_embed > self.used.shape[0]:  # extra token
+            inds[inds >= self.used.shape[0]] = 0  # simply set to zero
+        back = torch.gather(used[None, :][inds.shape[0] * [0], :], 1, inds)
         return back.reshape(ishape)
 
     def forward(self, z, temp=None, rescale_logits=False, return_logits=False):
-        assert temp is None or temp==1.0, "Only for interface compatible with Gumbel"
-        assert rescale_logits==False, "Only for interface compatible with Gumbel"
-        assert return_logits==False, "Only for interface compatible with Gumbel"
+        assert temp is None or temp == 1.0, "Only for interface compatible with Gumbel"
+        assert rescale_logits == False, "Only for interface compatible with Gumbel"
+        assert return_logits == False, "Only for interface compatible with Gumbel"
         # reshape z -> (batch, height, width, channel) and flatten
         # z = rearrange(z, 'b c h w -> b h w c').contiguous()
         z_flattened = z.view(-1, self.e_dim)
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
 
         d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
-            torch.sum(self.embedding.weight**2, dim=1) - 2 * \
+            torch.sum(self.embedding.weight ** 2, dim=1) - 2 * \
             torch.einsum('bd,dn->bn', z_flattened, rearrange(self.embedding.weight, 'n d -> d n'))
 
         min_encoding_indices = torch.argmin(d, dim=1)
@@ -106,12 +115,12 @@ class VectorQuantizer2(nn.Module):
 
         # compute loss for embedding
         if not self.legacy:
-            loss = self.beta * torch.mean((z_q.detach()-z)**2) + \
+            loss = self.beta * torch.mean((z_q.detach() - z) ** 2) + \
                    torch.mean((z_q - z.detach()) ** 2)
         else:
-            loss = torch.mean((z_q.detach()-z)**2) + self.beta * \
+            loss = torch.mean((z_q.detach() - z) ** 2) + self.beta * \
                    torch.mean((z_q - z.detach()) ** 2)
-        
+
         # print(torch.mean(z_q**2), torch.mean(z**2))
 
         # preserve gradients
@@ -121,9 +130,9 @@ class VectorQuantizer2(nn.Module):
         # z_q = rearrange(z_q, 'b h w c -> b c h w').contiguous()
 
         if self.remap is not None:
-            min_encoding_indices = min_encoding_indices.reshape(z.shape[0],-1) # add batch axis
+            min_encoding_indices = min_encoding_indices.reshape(z.shape[0], -1)  # add batch axis
             min_encoding_indices = self.remap_to_used(min_encoding_indices)
-            min_encoding_indices = min_encoding_indices.reshape(-1,1) # flatten
+            min_encoding_indices = min_encoding_indices.reshape(-1, 1)  # flatten
 
         if self.sane_index_shape:
             min_encoding_indices = min_encoding_indices.reshape(
@@ -134,9 +143,9 @@ class VectorQuantizer2(nn.Module):
     def get_codebook_entry(self, indices, shape):
         # shape specifying (batch, height, width, channel)
         if self.remap is not None:
-            indices = indices.reshape(shape[0],-1) # add batch axis
+            indices = indices.reshape(shape[0], -1)  # add batch axis
             indices = self.unmap_to_all(indices)
-            indices = indices.reshape(-1) # flatten again
+            indices = indices.reshape(-1)  # flatten again
 
         # get quantized latent vectors
         z_q = self.embedding(indices)
@@ -152,15 +161,18 @@ class VectorQuantizer2(nn.Module):
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
     """
+
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x):
         return drop_path(x, self.drop_prob, self.training)
-    
+
     def extra_repr(self) -> str:
         return 'p={}'.format(self.drop_prob)
+
+
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
@@ -179,6 +191,7 @@ class Mlp(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
+
 
 class Attention(nn.Module):
     def __init__(
@@ -212,12 +225,11 @@ class Attention(nn.Module):
         # qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
         qkv = qkv.reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
 
         q = q * self.scale
         attn = (q @ k.transpose(-2, -1))
 
-        
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
@@ -225,6 +237,7 @@ class Attention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
+
 
 class Block(nn.Module):
 
@@ -243,8 +256,8 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
         if init_values > 0:
-            self.gamma_1 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
-            self.gamma_2 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
+            self.gamma_1 = nn.Parameter(init_values * torch.ones((dim)), requires_grad=True)
+            self.gamma_2 = nn.Parameter(init_values * torch.ones((dim)), requires_grad=True)
         else:
             self.gamma_1, self.gamma_2 = None, None
 
@@ -259,17 +272,17 @@ class Block(nn.Module):
 
 
 class VisionTransformer(nn.Module):
-    def __init__(self, 
-                 embed_dim=768, 
+    def __init__(self,
+                 embed_dim=768,
                  depth=12,
-                 num_heads=12, 
-                 mlp_ratio=4., 
-                 qkv_bias=False, 
-                 qk_scale=None, 
-                 drop_rate=0., 
+                 num_heads=12,
+                 mlp_ratio=4.,
+                 qkv_bias=False,
+                 qk_scale=None,
+                 drop_rate=0.,
                  attn_drop_rate=0.,
-                 drop_path_rate=0., 
-                 norm_layer=nn.LayerNorm, 
+                 drop_path_rate=0.,
+                 norm_layer=nn.LayerNorm,
                  init_values=0.,
                  ):
         super().__init__()
@@ -285,10 +298,9 @@ class VisionTransformer(nn.Module):
                 init_values=init_values)
             for i in range(depth)])
 
-        self.norm =  norm_layer(embed_dim)
+        self.norm = norm_layer(embed_dim)
 
         self.apply(self._init_weights)
-
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -324,12 +336,13 @@ class VisionTransformer(nn.Module):
         x = self.forward_features(x, pos_embed)
         return x
 
+
 class Embedding(nn.Module):
     def __init__(self, query_channel=3, latent_channel=192):
         super(Embedding, self).__init__()
         # self.register_buffer('B', torch.randn((128, 3)) * 2)
 
-        self.l1 = weight_norm(nn.Linear(query_channel+latent_channel, 512))
+        self.l1 = weight_norm(nn.Linear(query_channel + latent_channel, 512))
         self.l2 = weight_norm(nn.Linear(512, 512))
         self.l3 = weight_norm(nn.Linear(512, 512))
         self.l4 = weight_norm(nn.Linear(512, 512 - query_channel - latent_channel))
@@ -354,6 +367,7 @@ class Embedding(nn.Module):
         h = self.l_out(h)
         return h
 
+
 def embed(input, basis):
     # print(input.shape, basis.shape)
     projections = torch.einsum(
@@ -361,6 +375,7 @@ def embed(input, basis):
     # print(projections.max(), projections.min())
     embeddings = torch.cat([projections.sin(), projections.cos()], dim=2)
     return embeddings  # B x N x E
+
 
 class Embedding(nn.Module):
     def __init__(self, query_channel=3, latent_channel=192):
@@ -371,15 +386,15 @@ class Embedding(nn.Module):
         e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
         e = torch.stack([
             torch.cat([e, torch.zeros(self.embedding_dim // 6),
-                      torch.zeros(self.embedding_dim // 6)]),
+                       torch.zeros(self.embedding_dim // 6)]),
             torch.cat([torch.zeros(self.embedding_dim // 6), e,
-                      torch.zeros(self.embedding_dim // 6)]),
+                       torch.zeros(self.embedding_dim // 6)]),
             torch.cat([torch.zeros(self.embedding_dim // 6),
-                      torch.zeros(self.embedding_dim // 6), e]),
+                       torch.zeros(self.embedding_dim // 6), e]),
         ])
         self.register_buffer('basis', e)  # 3 x 16
 
-        self.l1 = weight_norm(nn.Linear(query_channel+latent_channel+self.embedding_dim, 512))
+        self.l1 = weight_norm(nn.Linear(query_channel + latent_channel + self.embedding_dim, 512))
         self.l2 = weight_norm(nn.Linear(512, 512))
         self.l3 = weight_norm(nn.Linear(512, 512))
         self.l4 = weight_norm(nn.Linear(512, 512 - query_channel - latent_channel - self.embedding_dim))
@@ -418,32 +433,32 @@ class Decoder(nn.Module):
         self.log_sigma = nn.Parameter(torch.FloatTensor([3.0]))
         # self.register_buffer('log_sigma', torch.Tensor([-3.0]))
 
-        self.embed = Seq(Lin(48+3, latent_channel))#, nn.GELU(), Lin(128, 128))
+        self.embed = Seq(Lin(48 + 3, latent_channel))  # , nn.GELU(), Lin(128, 128))
 
         self.embedding_dim = 48
         e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
         e = torch.stack([
             torch.cat([e, torch.zeros(self.embedding_dim // 6),
-                      torch.zeros(self.embedding_dim // 6)]),
+                       torch.zeros(self.embedding_dim // 6)]),
             torch.cat([torch.zeros(self.embedding_dim // 6), e,
-                      torch.zeros(self.embedding_dim // 6)]),
+                       torch.zeros(self.embedding_dim // 6)]),
             torch.cat([torch.zeros(self.embedding_dim // 6),
-                      torch.zeros(self.embedding_dim // 6), e]),
+                       torch.zeros(self.embedding_dim // 6), e]),
         ])
         self.register_buffer('basis', e)  # 3 x 16
 
-        self.transformer = VisionTransformer(embed_dim=latent_channel, 
-                                            depth=6,
-                                            num_heads=6, 
-                                            mlp_ratio=4., 
-                                            qkv_bias=True, 
-                                            qk_scale=None, 
-                                            drop_rate=0., 
-                                            attn_drop_rate=0.,
-                                            drop_path_rate=0.1, 
-                                            norm_layer=partial(nn.LayerNorm, eps=1e-6), 
-                                            init_values=0.,
-                                            )
+        self.transformer = VisionTransformer(embed_dim=latent_channel,
+                                             depth=6,
+                                             num_heads=6,
+                                             mlp_ratio=4.,
+                                             qkv_bias=True,
+                                             qk_scale=None,
+                                             drop_rate=0.,
+                                             attn_drop_rate=0.,
+                                             drop_path_rate=0.1,
+                                             norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                                             init_values=0.,
+                                             )
 
     def forward(self, latents, centers, samples):
         # kernel average
@@ -455,52 +470,62 @@ class Decoder(nn.Module):
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
         latents = self.transformer(latents, embeddings)
 
-        pdist = (samples[:, :, None] - centers[:, None]).square().sum(dim=3) # B x N x T
+        pdist = (samples[:, :, None] - centers[:, None]).square().sum(dim=3)  # B x N x T
         sigma = torch.exp(self.log_sigma)
         weight = F.softmax(-pdist * sigma, dim=2)
 
-        latents = torch.sum(weight[:, :, :, None] * latents[:, None, :, :], dim=2) # B x N x 128
+        latents = torch.sum(weight[:, :, :, None] * latents[:, None, :, :], dim=2)  # B x N x 128
         preds = self.fc(samples, latents).squeeze(2)
-        
+
         return preds, sigma
 
 
 class PUDecoder(nn.Module):
-    def __init__(self, latent_channel=192):
+    def __init__(self, latent_channel=192, up_ratio=4, step_ratio=2, point_channels=3):
         super().__init__()
 
         self.fc = Embedding(latent_channel=latent_channel)
         self.log_sigma = nn.Parameter(torch.FloatTensor([3.0]))
         # self.register_buffer('log_sigma', torch.Tensor([-3.0]))
 
-        self.embed = Seq(Lin(48+3, latent_channel))#, nn.GELU(), Lin(128, 128))
+        self.embed = Seq(Lin(48 + 3, latent_channel))  # , nn.GELU(), Lin(128, 128))
 
         self.embedding_dim = 48
         e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
         e = torch.stack([
             torch.cat([e, torch.zeros(self.embedding_dim // 6),
-                      torch.zeros(self.embedding_dim // 6)]),
+                       torch.zeros(self.embedding_dim // 6)]),
             torch.cat([torch.zeros(self.embedding_dim // 6), e,
-                      torch.zeros(self.embedding_dim // 6)]),
+                       torch.zeros(self.embedding_dim // 6)]),
             torch.cat([torch.zeros(self.embedding_dim // 6),
-                      torch.zeros(self.embedding_dim // 6), e]),
+                       torch.zeros(self.embedding_dim // 6), e]),
         ])
         self.register_buffer('basis', e)  # 3 x 16
 
-        self.transformer = VisionTransformer(embed_dim=latent_channel, 
-                                            depth=6,
-                                            num_heads=6, 
-                                            mlp_ratio=4., 
-                                            qkv_bias=True, 
-                                            qk_scale=None, 
-                                            drop_rate=0., 
-                                            attn_drop_rate=0.,
-                                            drop_path_rate=0.1, 
-                                            norm_layer=partial(nn.LayerNorm, eps=1e-6), 
-                                            init_values=0.,
-                                            )
+        self.transformer = VisionTransformer(embed_dim=latent_channel,
+                                             depth=6,
+                                             num_heads=6,
+                                             mlp_ratio=4.,
+                                             qkv_bias=True,
+                                             qk_scale=None,
+                                             drop_rate=0.,
+                                             attn_drop_rate=0.,
+                                             drop_path_rate=0.1,
+                                             norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                                             init_values=0.,
+                                             )
 
-        self.out_layer = nn.Linear(256, 12)
+        # self.out_layer = nn.Linear(256, 18)  # 6 times
+        self.up_ratio = up_ratio
+        self.step_ratio = step_ratio
+        self.duplicate_ups = nn.ModuleDict()
+        for l in range(int(log(self.up_ratio, self.step_ratio))):
+            if l != 0:
+                self.duplicate_ups[str(l)] = DuplicateUp(input_channels=128, step_ratio=step_ratio)
+            else:
+                self.duplicate_ups[str(l)] = DuplicateUp(input_channels=256, step_ratio=step_ratio)
+
+        self.coarse_coordinate_regressor = CoordinateRegressor(128, point_channels)
 
     def forward(self, latents, centers):
         # kernel average
@@ -510,14 +535,27 @@ class PUDecoder(nn.Module):
 
         embeddings = embed(centers, self.basis)
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
-        latents = self.transformer(latents, embeddings) # (B, M, 256)
+        latents = self.transformer(latents, embeddings)  # (B, M, 256)
 
-        offset = self.out_layer(latents) # (B, M, 12)
-        offset = rearrange(offset, 'b n (r c) -> b n r c', c=3)
+        # feature expansion ((r+2)N)
+        for l in range(int(log(self.up_ratio, self.step_ratio))):
+            latents = self.duplicate_ups[str(l)](latents)
+
+        offset = self.coarse_coordinate_regressor(latents) # (B,3,r*n) torch.Size([32, 3, 1024])
+
+        offset = rearrange(offset, 'b c (r n) -> b c r n', r=4) # (B, M, r, 3)
+            # rearrange(offset, 'b n (r c) -> b n r c', c=3)
+
+        # offset = self.out_layer(latents)  # (B, M, 12)
+        offset = rearrange(offset, 'b c r n -> b n r c')
+
+        # offset = rearrange(offset, 'b n (r c) -> b n r c', c=3)
         pred = centers[:, :, None, :] + offset
         pred = rearrange(pred, 'b n r c -> b (n r) c', c=3)
+        # batchsize = pred.size()[0]
+        # pred = furthest_point_sample(pred, torch.tensor([batchsize, 1024]))
         return pred
-    
+
 
 class PointConv(torch.nn.Module):
     def __init__(self, local_nn=None, global_nn=None):
@@ -535,10 +573,9 @@ class PointConv(torch.nn.Module):
             embeddings = torch.cat([embeddings.sin(), embeddings.cos()], dim=1)
             out = torch.cat([out, embeddings], dim=1)
 
-
         if self.local_nn is not None:
             out = self.local_nn(out)
-        
+
         out, _ = scatter_max(out, col, dim=0, dim_size=col.max().item() + 1)
 
         if self.global_nn is not None:
@@ -551,58 +588,56 @@ class Encoder(nn.Module):
     def __init__(self, N, dim=128, M=2048, num_neighbors=32):
         super().__init__()
 
-        self.embed = Seq(Lin(48+3, dim))#, nn.GELU(), Lin(128, 128))
+        self.embed = Seq(Lin(48 + 3, dim))  # , nn.GELU(), Lin(128, 128))
 
         self.embedding_dim = 48
         e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
         e = torch.stack([
             torch.cat([e, torch.zeros(self.embedding_dim // 6),
-                      torch.zeros(self.embedding_dim // 6)]),
+                       torch.zeros(self.embedding_dim // 6)]),
             torch.cat([torch.zeros(self.embedding_dim // 6), e,
-                      torch.zeros(self.embedding_dim // 6)]),
+                       torch.zeros(self.embedding_dim // 6)]),
             torch.cat([torch.zeros(self.embedding_dim // 6),
-                      torch.zeros(self.embedding_dim // 6), e]),
+                       torch.zeros(self.embedding_dim // 6), e]),
         ])
         self.register_buffer('basis', e)  # 3 x 16
 
         # self.conv = PointConv(local_nn=Seq(weight_norm(Lin(3+self.embedding_dim, dim))))
         self.conv = PointConv(
-            local_nn=Seq(weight_norm(Lin(3+self.embedding_dim, 256)), ReLU(True), weight_norm(Lin(256, 256)) ),
-            global_nn=Seq(weight_norm(Lin(256, 256)), ReLU(True), weight_norm(Lin(256, dim)) ),
+            local_nn=Seq(weight_norm(Lin(3 + self.embedding_dim, 256)), ReLU(True), weight_norm(Lin(256, 256))),
+            global_nn=Seq(weight_norm(Lin(256, 256)), ReLU(True), weight_norm(Lin(256, dim))),
         )
 
-        self.transformer = VisionTransformer(embed_dim=dim, 
-                                            depth=6,
-                                            num_heads=6, 
-                                            mlp_ratio=4., 
-                                            qkv_bias=True, 
-                                            qk_scale=None, 
-                                            drop_rate=0., 
-                                            attn_drop_rate=0.,
-                                            drop_path_rate=0.1, 
-                                            norm_layer=partial(nn.LayerNorm, eps=1e-6), 
-                                            init_values=0.,
-                                            )
-
+        self.transformer = VisionTransformer(embed_dim=dim,
+                                             depth=6,
+                                             num_heads=6,
+                                             mlp_ratio=4.,
+                                             qkv_bias=True,
+                                             qk_scale=None,
+                                             drop_rate=0.,
+                                             attn_drop_rate=0.,
+                                             drop_path_rate=0.1,
+                                             norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                                             init_values=0.,
+                                             )
 
         self.M = M
-        self.ratio = N / M 
+        self.ratio = N / M
         self.k = num_neighbors
 
     def forward(self, pc):
         # pc: B x N x D
         B, N, D = pc.shape
         assert N == self.M
-        
-        flattened = pc.view(B*N, D)
+
+        flattened = pc.view(B * N, D)
 
         batch = torch.arange(B).to(pc.device)
         batch = torch.repeat_interleave(batch, N)
 
         pos = flattened
 
-
-        idx = fps(pos, batch, ratio=self.ratio) # 0.0625
+        idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
 
         row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
         edge_index = torch.stack([col, row], dim=0)
@@ -621,12 +656,13 @@ class Encoder(nn.Module):
 
         return out, pos
 
+
 class Autoencoder(nn.Module):
     def __init__(self, N, K=512, dim=256, M=2048, num_neighbors=32):
         super().__init__()
 
         self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
-        
+
         self.decoder = Decoder(latent_channel=dim)
 
         self.codebook = VectorQuantizer2(K, dim)
@@ -638,16 +674,15 @@ class Autoencoder(nn.Module):
     def encode(self, x, bins=256):
         B, _, _ = x.shape
 
-        z_e_x, centers = self.encoder(x) # B x T x C, B x T x 3
+        z_e_x, centers = self.encoder(x)  # B x T x C, B x T x 3
 
-        centers_quantized = ((centers + 1) / 2 * (bins-1)).long()
-        
+        centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
+
         z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
         # print(z_q_x_st.shape, loss_vq.item(), perplexity.item(), encodings.shape)
         return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
 
     def forward(self, x, points):
-
         z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)
 
         centers = centers_quantized.float() / 255.0 * 2 - 1
@@ -656,7 +691,7 @@ class Autoencoder(nn.Module):
 
         z_q_x_st = z_q_x_st
         B, N, C = z_q_x_st.shape
-        
+
         logits, sigma = self.decoder(z_q_x_st, centers, points)
 
         return logits, z_e_x, z_q_x, sigma, loss_vq, perplexity
@@ -667,7 +702,7 @@ class PUAutoencoder(nn.Module):
         super().__init__()
 
         self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
-        
+
         self.decoder = PUDecoder(latent_channel=dim)
 
         self.codebook = VectorQuantizer2(K, dim)
@@ -679,16 +714,15 @@ class PUAutoencoder(nn.Module):
     def encode(self, x, bins=256):
         B, _, _ = x.shape
 
-        z_e_x, centers = self.encoder(x) # B x T x C, B x T x 3
+        z_e_x, centers = self.encoder(x)  # B x T x C, B x T x 3
 
-        centers_quantized = ((centers + 1) / 2 * (bins-1)).long()
-        
+        centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
+
         z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
         # print(z_q_x_st.shape, loss_vq.item(), perplexity.item(), encodings.shape)
         return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
 
     def forward(self, x):
-
         z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)
 
         centers = centers_quantized.float() / 255.0 * 2 - 1
@@ -715,6 +749,7 @@ def vqvae_64_1024_2048(pretrained=False, **kwargs):
         model.load_state_dict(checkpoint["model"])
     return model
 
+
 @register_model
 def vqvae_128_1024_2048(pretrained=False, **kwargs):
     model = Autoencoder(
@@ -730,6 +765,7 @@ def vqvae_128_1024_2048(pretrained=False, **kwargs):
         model.load_state_dict(checkpoint["model"])
     return model
 
+
 @register_model
 def vqvae_256_1024_2048(pretrained=False, **kwargs):
     model = Autoencoder(
@@ -744,6 +780,7 @@ def vqvae_256_1024_2048(pretrained=False, **kwargs):
         )
         model.load_state_dict(checkpoint["model"])
     return model
+
 
 @register_model
 def vqvae_512_1024_2048(pretrained=False, **kwargs):
@@ -762,7 +799,7 @@ def vqvae_512_1024_2048(pretrained=False, **kwargs):
 
 
 @register_model
-def vqpc_512_1024_2048(pretrained=False, **kwargs):
+def vqpc_256_1024_1024(pretrained=False, **kwargs):
     model = PUAutoencoder(
         N=256,
         K=1024,

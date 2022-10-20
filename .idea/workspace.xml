@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="BranchesTreeState">
+    <expand>
+      <path>
+        <item name="ROOT" type="e8cecc67:BranchNodeDescriptor" />
+        <item name="LOCAL_ROOT" type="e8cecc67:BranchNodeDescriptor" />
+      </path>
+      <path>
+        <item name="ROOT" type="e8cecc67:BranchNodeDescriptor" />
+        <item name="REMOTE_ROOT" type="e8cecc67:BranchNodeDescriptor" />
+      </path>
+      <path>
+        <item name="ROOT" type="e8cecc67:BranchNodeDescriptor" />
+        <item name="REMOTE_ROOT" type="e8cecc67:BranchNodeDescriptor" />
+        <item name="GROUP_NODE:origin" type="e8cecc67:BranchNodeDescriptor" />
+      </path>
+      <path>
+        <item name="ROOT" type="e8cecc67:BranchNodeDescriptor" />
+        <item name="REMOTE_ROOT" type="e8cecc67:BranchNodeDescriptor" />
+        <item name="GROUP_NODE:upstream" type="e8cecc67:BranchNodeDescriptor" />
+      </path>
+    </expand>
+    <select />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="bfcfb21a-1b57-49aa-9031-b68e3a1ba938" name="Default Changelist" comment="" />
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProjectId" id="2GIq54UMKV0pns4RsKVrHSJTcHo" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">
+    <property name="RunOnceActivity.OpenProjectViewOnStart" value="true" />
+    <property name="RunOnceActivity.ShowReadmeOnStart" value="true" />
+    <property name="WebServerToolWindowFactoryState" value="true" />
+    <property name="last_opened_file_path" value="$PROJECT_DIR$" />
+    <property name="node.js.detected.package.eslint" value="true" />
+    <property name="node.js.detected.package.tslint" value="true" />
+    <property name="node.js.path.for.package.eslint" value="project" />
+    <property name="node.js.path.for.package.tslint" value="project" />
+    <property name="node.js.selected.package.eslint" value="(autodetect)" />
+    <property name="node.js.selected.package.tslint" value="(autodetect)" />
+    <property name="settings.editor.selected.configurable" value="com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable" />
+  </component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="E:\code\3DILG\dis_pu" />
+      <recent name="E:\code\3DILG" />
+    </key>
+  </component>
+  <component name="SvnConfiguration">
+    <configuration />
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="bfcfb21a-1b57-49aa-9031-b68e3a1ba938" name="Default Changelist" comment="" />
+      <created>1666086258851</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1666086258851</updated>
+      <workItem from="1666086262494" duration="42991000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="2" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="WindowStateProjectService">
+    <state x="361" y="119" key="#Deployment" timestamp="1666101582512">
+      <screen x="0" y="0" width="1536" height="920" />
+    </state>
+    <state x="361" y="119" key="#Deployment/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666101582512" />
+    <state x="549" y="215" key="FileChooserDialogImpl" timestamp="1666101531854">
+      <screen x="0" y="0" width="1536" height="920" />
+    </state>
+    <state x="549" y="215" key="FileChooserDialogImpl/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666101531854" />
+    <state x="270" y="105" width="1094" height="710" key="SettingsEditor" timestamp="1666101536694">
+      <screen x="0" y="0" width="1536" height="920" />
+    </state>
+    <state x="270" y="105" width="1094" height="710" key="SettingsEditor/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666101536694" />
+    <state x="610" y="345" key="com.jetbrains.plugins.remotesdk.ui.RemoteMappingsConfiguration" timestamp="1666101535582">
+      <screen x="0" y="0" width="1536" height="920" />
+    </state>
+    <state x="610" y="345" key="com.jetbrains.plugins.remotesdk.ui.RemoteMappingsConfiguration/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666101535582" />
+    <state x="1957" y="-60" width="1337" height="906" key="dock-window-1" timestamp="1666108461662">
+      <screen x="1920" y="-99" width="1536" height="920" />
+    </state>
+    <state x="1957" y="-60" width="1337" height="906" key="dock-window-1/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666108461662" />
+    <state x="468" y="192" width="949" height="726" key="find.popup" timestamp="1666281968826">
+      <screen x="0" y="0" width="1536" height="920" />
+    </state>
+    <state x="468" y="192" width="949" height="726" key="find.popup/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666281968826" />
+    <state x="715" y="311" width="353" height="586" key="ftp.server.browser" timestamp="1666101581440">
+      <screen x="0" y="0" width="1536" height="920" />
+    </state>
+    <state x="715" y="311" width="353" height="586" key="ftp.server.browser/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666101581440" />
+  </component>
+</project>

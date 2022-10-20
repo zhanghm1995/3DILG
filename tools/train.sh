@@ -1,0 +1,1 @@
+torchrun --nproc_per_node=1 run_vqvae.py --output_dir output/vqvae_256_1024_1024_resume --model vqvae_256_1024_1024 --batch_size 40 --num_workers 6 --lr 1e-3 --point_cloud_size 1024 --log_dir output/vqvae_256_1024_1024_resume/logs/ --save_ckpt --resume "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqvae_256_1024_1024/checkpoint-479.pth" --eval

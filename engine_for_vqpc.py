@@ -27,11 +27,12 @@ def train_batch(model, gt_pc, radius, criterion):
     outputs, _, _, loss_vq, _ = model(gt_pc)
 
     emd_loss = 100.0 * compute_emd_loss(outputs, gt_pc, radius)
-    rep_loss = 10.0 * compute_repulsion_loss(outputs)
+    # rep_loss = 10.0 * compute_repulsion_loss(outputs)
+    uniform_loss = 10.0 * get_uniform_loss(outputs)
 
-    loss = loss_vq + emd_loss + rep_loss
+    loss = loss_vq + emd_loss + uniform_loss
 
-    return loss, outputs, emd_loss.item(), rep_loss.item(), loss_vq.item()
+    return loss, outputs, emd_loss.item(), uniform_loss.item(), loss_vq.item()
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -74,7 +75,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         else:
             with torch.cuda.amp.autocast(enabled=True):
 
-                loss, outputs, emd_loss, rep_loss, loss_vq = \
+                loss, outputs, emd_loss, uniform_loss, loss_vq = \
                     train_batch(model, gt_data, radius_data, criterion)
         
         loss_value = loss.item()
@@ -104,7 +105,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(loss=loss_value)
         metric_logger.update(loss_scale=loss_scale_value)
         metric_logger.update(loss_emd=emd_loss)
-        metric_logger.update(loss_rep=rep_loss)
+        # metric_logger.update(loss_rep=rep_loss)
+        metric_logger.update(uniform_loss=uniform_loss)
         metric_logger.update(loss_vq=loss_vq)
 
 
@@ -131,7 +133,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             log_writer.update(weight_decay=weight_decay_value, head="opt")
             log_writer.update(grad_norm=grad_norm, head="opt")
             log_writer.update(loss_emd=emd_loss, head="opt")
-            log_writer.update(loss_rep=rep_loss, head="opt")
+            # log_writer.update(loss_rep=rep_loss, head="opt")
+            log_writer.update(loss_uni=uniform_loss, head="opt")
 
             log_writer.set_step()
 
@@ -162,11 +165,14 @@ def validate(epoch, log_dir, data_loader, model, device, visualize=True):
             pred = pred.float().cuda().contiguous()
             cd_loss = compute_cd_loss(pred, gt_pc)
             emd_loss = compute_emd_loss(pred, gt_pc, radius)
+            uniform_loss = get_uniform_loss(pred)
         
         batch_size = gt_pc.shape[0]
         metric_logger.update(emd_loss=emd_loss.item())
         metric_logger.update(cd_loss=cd_loss.item())
         metric_logger.update(vq_loss=loss_vq.item())
+        metric_logger.update(uniform_loss=uniform_loss.item())
+
 
         ## Save point cloud for visualization
         if visualize and batch_index % 100 == 0:
