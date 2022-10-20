@@ -2,7 +2,7 @@ data/
 __pycache__
 *.jpg
 *.obj
-*.sh
+# *.sh
 *.pth
 *.zip
 *clip*
