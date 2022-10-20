@@ -500,9 +500,7 @@ class PUDecoder(nn.Module):
                                             init_values=0.,
                                             )
 
-        self.out_layer = nn.Sequential(
-            nn.Linear(256, 12),
-            nn.Sigmoid())
+        self.out_layer = nn.Linear(256, 12)
 
     def forward(self, latents, centers):
         # kernel average
