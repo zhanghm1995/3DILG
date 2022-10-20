@@ -463,6 +463,63 @@ class Decoder(nn.Module):
         preds = self.fc(samples, latents).squeeze(2)
         
         return preds, sigma
+
+
+class PUDecoder(nn.Module):
+    def __init__(self, latent_channel=192):
+        super().__init__()
+
+        self.fc = Embedding(latent_channel=latent_channel)
+        self.log_sigma = nn.Parameter(torch.FloatTensor([3.0]))
+        # self.register_buffer('log_sigma', torch.Tensor([-3.0]))
+
+        self.embed = Seq(Lin(48+3, latent_channel))#, nn.GELU(), Lin(128, 128))
+
+        self.embedding_dim = 48
+        e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
+        e = torch.stack([
+            torch.cat([e, torch.zeros(self.embedding_dim // 6),
+                      torch.zeros(self.embedding_dim // 6)]),
+            torch.cat([torch.zeros(self.embedding_dim // 6), e,
+                      torch.zeros(self.embedding_dim // 6)]),
+            torch.cat([torch.zeros(self.embedding_dim // 6),
+                      torch.zeros(self.embedding_dim // 6), e]),
+        ])
+        self.register_buffer('basis', e)  # 3 x 16
+
+        self.transformer = VisionTransformer(embed_dim=latent_channel, 
+                                            depth=6,
+                                            num_heads=6, 
+                                            mlp_ratio=4., 
+                                            qkv_bias=True, 
+                                            qk_scale=None, 
+                                            drop_rate=0., 
+                                            attn_drop_rate=0.,
+                                            drop_path_rate=0.1, 
+                                            norm_layer=partial(nn.LayerNorm, eps=1e-6), 
+                                            init_values=0.,
+                                            )
+
+        self.out_layer = nn.Sequential(
+            nn.Linear(256, 12),
+            nn.Sigmoid())
+
+    def forward(self, latents, centers):
+        # kernel average
+        # samples: B x N x 3
+        # latents: B x T x 320
+        # centers: B x T x 3
+
+        embeddings = embed(centers, self.basis)
+        embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
+        latents = self.transformer(latents, embeddings) # (B, M, 256)
+        print(latents.shape)
+
+        offset = self.out_layer(latents) # (B, M, 12)
+        offset = rearrange(offset, 'b n (r c) -> b n r c', c=3)
+        pred = centers[:, :, None, :] + offset
+        pred = rearrange(pred, 'b n r c -> b (n r) c', c=3)
+        return pred
     
 
 class PointConv(torch.nn.Module):
@@ -606,6 +663,45 @@ class Autoencoder(nn.Module):
         logits, sigma = self.decoder(z_q_x_st, centers, points)
 
         return logits, z_e_x, z_q_x, sigma, loss_vq, perplexity
+
+
+class PUAutoencoder(nn.Module):
+    def __init__(self, N, K=512, dim=256, M=2048, num_neighbors=32):
+        super().__init__()
+
+        self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
+        
+        self.decoder = PUDecoder(latent_channel=dim)
+
+        self.codebook = VectorQuantizer2(K, dim)
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {}
+
+    def encode(self, x, bins=256):
+        B, _, _ = x.shape
+
+        z_e_x, centers = self.encoder(x) # B x T x C, B x T x 3
+
+        centers_quantized = ((centers + 1) / 2 * (bins-1)).long()
+        
+        z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
+        # print(z_q_x_st.shape, loss_vq.item(), perplexity.item(), encodings.shape)
+        return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
+
+    def forward(self, x):
+
+        z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)
+
+        centers = centers_quantized.float() / 255.0 * 2 - 1
+
+        z_q_x = z_q_x_st
+
+        pred = self.decoder(z_q_x_st, centers)
+
+        return pred, z_e_x, z_q_x, loss_vq, perplexity
+
 
 @register_model
 def vqvae_64_1024_2048(pretrained=False, **kwargs):
