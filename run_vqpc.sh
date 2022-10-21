@@ -19,4 +19,4 @@ torchrun --nproc_per_node=1 --master_port=20002 run_vqpc.py \
          --point_cloud_size 1024  \
          --save_ckpt_freq 10 --validation_freq 1 \
          --save_ckpt --test \
-         --resume "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_offset/checkpoint-89.pth"
+         --resume "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_offset/checkpoint-109.pth"
