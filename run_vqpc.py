@@ -24,7 +24,7 @@ from timm.utils import ModelEma
 from optim_factory import create_optimizer, get_parameter_groups, LayerDecayValueAssigner
 
 from datasets import build_upsampling_dataset
-from engine_for_vqpc import train_one_epoch, evaluate, validate
+from engine_for_vqpc import train_one_epoch, evaluate, validate, test
 import utils
 from utils import NativeScalerWithGradNormCount as NativeScaler
 
@@ -110,6 +110,8 @@ def get_args():
                         help='start epoch')
     parser.add_argument('--eval', action='store_true',
                         help='Perform evaluation only')
+    parser.add_argument('--test', action='store_true',
+                        help='Perform test only')
     parser.add_argument('--dist_eval', action='store_true', default=False,
                         help='Enabling distributed evaluation')
     parser.add_argument('--num_workers', default=16, type=int)
@@ -148,6 +150,8 @@ def main(args, ds_init):
         dataset_val = None
     else:
         dataset_val = build_upsampling_dataset('val', args=args)
+    if args.test:
+        dataset_test = build_upsampling_dataset('test', args=args)
 
     if args.distributed:
         num_tasks = utils.get_world_size()
@@ -168,6 +172,8 @@ def main(args, ds_init):
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+        if args.test:
+            sampler_test = torch.utils.data.SequentialSampler(dataset_test)
 
     global_rank = 0
     if global_rank == 0 and args.log_dir is not None:
@@ -197,6 +203,16 @@ def main(args, ds_init):
         print(f"====================Validation Dataloader length: {len(data_loader_val)}==============")
     else:
         data_loader_val = None
+
+    if args.test:
+        data_loader_test = torch.utils.data.DataLoader(
+            dataset_test, sampler=sampler_test,
+            batch_size=1,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_mem,
+            drop_last=False,
+        )
+        print(f"====================Test Dataloader length: {len(data_loader_test)}==============")
 
     model = create_model(
         args.model,
@@ -273,41 +289,44 @@ def main(args, ds_init):
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
+    if args.test:
+        test(data_loader_test, model, device)
+    else:
+        for epoch in range(args.start_epoch, args.epochs):
+            if args.distributed:
+                data_loader_train.sampler.set_epoch(epoch)
 
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer,
-            device, epoch, loss_scaler, args.clip_grad, model_ema,
-            log_writer=log_writer, start_steps=epoch * num_training_steps_per_epoch,
-            lr_schedule_values=lr_schedule_values, wd_schedule_values=wd_schedule_values,
-            num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq,
-        )
-        # print(train_stats)
+            train_stats = train_one_epoch(
+                model, criterion, data_loader_train, optimizer,
+                device, epoch, loss_scaler, args.clip_grad, model_ema,
+                log_writer=log_writer, start_steps=epoch * num_training_steps_per_epoch,
+                lr_schedule_values=lr_schedule_values, wd_schedule_values=wd_schedule_values,
+                num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq,
+            )
+            # print(train_stats)
 
-        if args.output_dir and args.save_ckpt:
-            if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
-                utils.save_model(
-                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                    loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
-        if data_loader_val is not None and (epoch % args.validation_freq == 0 or epoch + 1 == args.epochs):
-            test_stats = validate(epoch, args.output_dir, data_loader_val, model, device)
+            if args.output_dir and args.save_ckpt:
+                if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
+                    utils.save_model(
+                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                        loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
+            if data_loader_val is not None and (epoch % args.validation_freq == 0 or epoch + 1 == args.epochs):
+                test_stats = validate(epoch, args.output_dir, data_loader_val, model, device)
 
-            log_stats = {'epoch': epoch,
-                         **{f'train_{k}': v for k, v in train_stats.items()},
-                         **{f'test_{k}': v for k, v in test_stats.items()},
-                         'n_parameters': n_parameters}
-        else:
-            log_stats = {'epoch': epoch,
-                         **{f'train_{k}': v for k, v in train_stats.items()},
-                         'n_parameters': n_parameters}
+                log_stats = {'epoch': epoch,
+                             **{f'train_{k}': v for k, v in train_stats.items()},
+                             **{f'test_{k}': v for k, v in test_stats.items()},
+                             'n_parameters': n_parameters}
+            else:
+                log_stats = {'epoch': epoch,
+                             **{f'train_{k}': v for k, v in train_stats.items()},
+                             'n_parameters': n_parameters}
 
-        if args.output_dir and utils.is_main_process():
-            if log_writer is not None:
-                log_writer.flush()
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
+            if args.output_dir and utils.is_main_process():
+                if log_writer is not None:
+                    log_writer.flush()
+                with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_stats) + "\n")
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

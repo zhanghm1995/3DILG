@@ -21,8 +21,11 @@ from timm.utils import ModelEma
 
 import utils
 from pu_losses import *
-
-
+from vis_util import save_xyz_file
+from pointnet2.utils import pointnet2_utils
+from einops import repeat, rearrange
+from pu_losses import compute_cd_loss
+import numpy as np
 def train_batch(model, gt_pc, radius, criterion):
     outputs, _, _, loss_vq, _ = model(gt_pc)
 
@@ -77,7 +80,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
                 loss, outputs, emd_loss, uniform_loss, loss_vq = \
                     train_batch(model, gt_data, radius_data, criterion)
-        
+
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
@@ -99,7 +102,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     model_ema.update(model)
             loss_scale_value = loss_scaler.state_dict()["scale"]
 
-                    
+
         torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
@@ -166,7 +169,7 @@ def validate(epoch, log_dir, data_loader, model, device, visualize=True):
             cd_loss = compute_cd_loss(pred, gt_pc)
             emd_loss = compute_emd_loss(pred, gt_pc, radius)
             uniform_loss = get_uniform_loss(pred)
-        
+
         batch_size = gt_pc.shape[0]
         metric_logger.update(emd_loss=emd_loss.item())
         metric_logger.update(cd_loss=cd_loss.item())
@@ -192,6 +195,39 @@ def validate(epoch, log_dir, data_loader, model, device, visualize=True):
     metric_logger.synchronize_between_processes()
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+@torch.no_grad()
+def test(data_loader, model, device):
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = 'Test:'
+    num_GT_points = 8192
+    model.eval()
+    cd_list = []
+    for batch in metric_logger.log_every(data_loader, 200, header):
+        points, normalized_points_GT, normalized_points_LR, furthest_dist, centroid, name = batch
+
+        ori_GT = points.float().to(device, non_blocking=True).contiguous()
+        normalized_points_GT = normalized_points_GT.float().to(device, non_blocking=True).contiguous()
+        radius = furthest_dist.float().to(device, non_blocking=True).contiguous()
+        centroid = centroid.float().to(device, non_blocking=True).contiguous()
+
+        with torch.cuda.amp.autocast():
+            input_list, pred_pc = model.pc_prediction(normalized_points_GT)
+            idx = pointnet2_utils.furthest_point_sample(pred_pc, num_GT_points)
+            pred = pointnet2_utils.gather_operation(pred_pc.permute(0, 2, 1).contiguous(), idx)
+
+            batch_size = points.shape[0]
+            radius = repeat(radius, 'r -> r w h', w=1, h=1).contiguous()
+            pred = pred * radius + centroid.unsqueeze(2).repeat(1, 1, 8192)  # torch.Size([4, 3, 8192])
+            pred = pred.permute(0, 2, 1)
+            cd = compute_cd_loss(pred, ori_GT)
+            cd_list.append(cd.data.cpu().numpy())
+            pred = pred.data.cpu().numpy()
+            for i in range(batch_size):
+                save_file = 'visualize/{}/{}.xyz'.format('stage1', name[i])
+                save_xyz_file(pred[i, ...], save_file)
+    print('mean cd on test set: ', np.mean(cd_list))
+
 
 
 @torch.no_grad()

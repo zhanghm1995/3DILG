@@ -290,3 +290,36 @@ class PUGAN_Dataset(data.Dataset):
             raise NotImplementedError
 
         return torch.FloatTensor(input_data), torch.FloatTensor(gt_data), torch.FloatTensor(radius_data)
+
+class xyz_Dataset_Whole(data.Dataset):
+    def __init__(self, data_dir='../MC_5k', n_input=2048):
+        super().__init__()
+        self.raw_input_points = 8192
+        self.n_input = n_input
+
+        file_list = os.listdir(data_dir)
+        self.names = [x.split('.')[0] for x in file_list]
+        self.sample_path = [os.path.join(data_dir, x) for x in file_list]
+
+    def __len__(self):
+        return len(self.names)
+
+    def __getitem__(self, index):
+        name = self.names[index]
+        random_index = np.random.choice(np.linspace(0, self.raw_input_points, self.raw_input_points, endpoint=False),
+                                        self.n_input).astype(np.int)
+        points = np.loadtxt(self.sample_path[index])
+
+        centroid = np.mean(points[:, 0:3], axis=0)
+        dist = np.linalg.norm(points[:, 0:3] - centroid, axis=1)
+        furthest_dist = np.max(dist)
+        # print('###########', furthest_dist, furthest_dist.shape)
+        # radius = furthest_dist[:, 0]
+        # radius = furthest_dist
+
+        reduced_point = points[random_index][:, 0:3]
+
+        normalized_points_LR = (reduced_point - centroid) / furthest_dist
+        normalized_points_GT = (points - centroid) / furthest_dist
+
+        return points, normalized_points_GT, normalized_points_LR, furthest_dist, centroid, name

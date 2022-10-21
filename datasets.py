@@ -39,13 +39,15 @@ def build_shape_surface_occupancy_dataset(split, args):
 
 
 def build_upsampling_dataset(split, args):
-    from pu_dataset import PUGAN_Dataset
+    from pu_dataset import PUGAN_Dataset, xyz_Dataset_Whole
 
     if split == 'train':
         # transform = AxisScaling((0.75, 1.25), True)
         return PUGAN_Dataset(args.data_path, split="./data/train/train.txt", isTrain=True)
     elif split == 'val':
         return PUGAN_Dataset(args.data_path, split="./data/train/val.txt", isTrain=False)
+    elif split == 'test':
+        return xyz_Dataset_Whole(data_dir='./data/test/gt_FPS_8192/', n_input=2048)
     else:
         raise NotImplementedError
 

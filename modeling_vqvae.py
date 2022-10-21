@@ -29,6 +29,8 @@ from dis_pu.layers import (
     DuplicateUp,
     CoordinateRegressor,
     PointShuffle)
+from pointnet2.utils import pointnet2_utils
+from vis_util import save_xyz_file
 
 def _cfg(url='', **kwargs):
     return {
@@ -541,10 +543,10 @@ class PUDecoder(nn.Module):
         for l in range(int(log(self.up_ratio, self.step_ratio))):
             latents = self.duplicate_ups[str(l)](latents)
 
-        offset = self.coarse_coordinate_regressor(latents) # (B,3,r*n) torch.Size([32, 3, 1024])
+        offset = self.coarse_coordinate_regressor(latents)  # (B,3,r*n) torch.Size([32, 3, 1024])
 
-        offset = rearrange(offset, 'b c (r n) -> b c r n', r=4) # (B, M, r, 3)
-            # rearrange(offset, 'b n (r c) -> b n r c', c=3)
+        offset = rearrange(offset, 'b c (r n) -> b c r n', r=4)  # (B, M, r, 3)
+        # rearrange(offset, 'b n (r c) -> b n r c', c=3)
 
         # offset = self.out_layer(latents)  # (B, M, 12)
         offset = rearrange(offset, 'b c r n -> b n r c')
@@ -706,6 +708,8 @@ class PUAutoencoder(nn.Module):
         self.decoder = PUDecoder(latent_channel=dim)
 
         self.codebook = VectorQuantizer2(K, dim)
+        self.M = M
+        self.N = N
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -719,8 +723,34 @@ class PUAutoencoder(nn.Module):
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 
         z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
-        # print(z_q_x_st.shape, loss_vq.item(), perplexity.item(), encodings.shape)
         return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
+
+    def pc_prediction(self, points):
+        ## get patch seed from farthestsampling
+        seed1_num = 20 #int(points.size()[1] / self.M)
+
+        ## FPS sampling
+        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed1_num)
+        seed_xyz = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
+        seed_xyz = seed_xyz.permute(0, 2, 1).contiguous()
+
+        input_list = []
+        top_k_neareast_idx = pointnet2_utils.knn_point(self.M, seed_xyz,
+                                                       points)  # (batch_size, npoint1, k)
+        for i in range(top_k_neareast_idx.size()[1]):
+            idx = top_k_neareast_idx[:, i, :]  # torch.Size([1, 1024])
+            patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
+                                                     idx)
+            patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
+            up_point = self(patch)
+
+            input_list.append(patch)
+            if i == 0:
+                result = up_point[0]
+            else:
+                result = torch.cat((result, up_point[0]), dim=1)
+
+        return input_list, result
 
     def forward(self, x):
         z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)
@@ -784,7 +814,7 @@ def vqvae_256_1024_2048(pretrained=False, **kwargs):
 
 @register_model
 def vqvae_512_1024_2048(pretrained=False, **kwargs):
-    model = Autoencoder(
+    model = PUAutoencoder(
         N=512,
         K=1024,
         M=2048,
