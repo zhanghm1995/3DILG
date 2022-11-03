@@ -31,20 +31,28 @@ from pu_metrics import compute_cd_hd_distance
 def train_batch(model, input_pc, gt_pc, radius, stage='stage1'):
     if stage == 'stage1':
         p1_pred, p2_pred, p3_pred, _, _, loss_vq, _ = model(gt_pc)
+
+        idx = pointnet2_utils.furthest_point_sample(gt_pc, 512)
+        gt_pc_FPS_512 = pointnet2_utils.gather_operation(gt_pc.permute(0, 2, 1).contiguous(), idx)
+        gt_pc_FPS_512 = gt_pc_FPS_512.permute(0, 2, 1).contiguous()
+        p1_cd_dist, p1_hd_value = compute_cd_hd_distance(p1_pred, gt_pc_FPS_512, lamda_cd=100, lamda_hd=10)
         coarse_cd_dist, coarse_hd_value = compute_cd_hd_distance(p2_pred, gt_pc, lamda_cd=100, lamda_hd=10)
         fine_cd_dist, fine_hd_value = compute_cd_hd_distance(p3_pred, gt_pc, lamda_cd=100, lamda_hd=10)
 
+        p1_emd_loss = 100.0 * compute_emd_loss(p1_pred, gt_pc_FPS_512, radius)
         coarse_emd_loss = 100.0 * compute_emd_loss(p2_pred, gt_pc, radius)
         fine_emd_loss = 100.0 * compute_emd_loss(p3_pred, gt_pc, radius)
 
         # rep_loss = 10.0 * compute_repulsion_loss(outputs)
         # uniform_loss = 10.0 * get_uniform_loss(outputs)
-        lamda_coarse = 0.8
+        lamda_coarse = 1
         loss = loss_vq + \
+               p1_emd_loss + p1_cd_dist + p1_hd_value + \
                lamda_coarse * (coarse_emd_loss + coarse_cd_dist + coarse_hd_value) + \
                fine_emd_loss + fine_cd_dist + fine_hd_value
 
         return loss, p2_pred, p3_pred, loss_vq.item(), \
+               p1_emd_loss.item(), p1_cd_dist.item(), p1_hd_value.item(), \
                coarse_emd_loss.item(), coarse_cd_dist.item(), coarse_hd_value.item(), \
                fine_emd_loss.item(), fine_cd_dist.item(), fine_hd_value.item()
 
@@ -53,6 +61,7 @@ def train_batch(model, input_pc, gt_pc, radius, stage='stage1'):
         coarse_cd_dist, coarse_hd_value = compute_cd_hd_distance(p2_pred, gt_pc, lamda_cd=100, lamda_hd=10)
         fine_cd_dist, fine_hd_value = compute_cd_hd_distance(p3_pred, gt_pc, lamda_cd=100, lamda_hd=10)
         pre_cd_dist, pre_hd_value = compute_cd_hd_distance(coarse_dense_pc, gt_pc, lamda_cd=100, lamda_hd=10)
+
         coarse_emd_loss = 100.0 * compute_emd_loss(p2_pred, gt_pc, radius)
         fine_emd_loss = 100.0 * compute_emd_loss(p3_pred, gt_pc, radius)
         pre_emd_loss = 100.0 * compute_emd_loss(coarse_dense_pc, gt_pc, radius)
@@ -110,8 +119,9 @@ def train_one_epoch(model: torch.nn.Module,
         else:
             with torch.cuda.amp.autocast(enabled=True):
                 if stage == 'stage1':
-                    loss, p2_pred, p3_pred, loss_vq,\
-                    coarse_emd_loss, coarse_cd_dist, coarse_hd_value,\
+                    loss, p2_pred, p3_pred, loss_vq, \
+                    p1_emd_loss, p1_cd_dist, p1_hd_value, \
+                    coarse_emd_loss, coarse_cd_dist, coarse_hd_value, \
                     fine_emd_loss, fine_cd_dist, fine_hd_value = \
                         train_batch(model, gt_data, gt_data, radius_data, stage)
                 elif stage == 'stage2':
@@ -144,7 +154,6 @@ def train_one_epoch(model: torch.nn.Module,
 
         torch.cuda.synchronize()
 
-
         metric_logger.update(loss=loss_value)
         metric_logger.update(loss_scale=loss_scale_value)
         metric_logger.update(loss_coarse_emd=coarse_emd_loss)
@@ -157,6 +166,9 @@ def train_one_epoch(model: torch.nn.Module,
         if stage == 'stage1':
             # metric_logger.update(uniform_loss=uniform_loss)
             metric_logger.update(loss_vq=loss_vq)
+            metric_logger.update(loss_p1_emd=p1_emd_loss)
+            metric_logger.update(loss_p1_cd=p1_cd_dist)
+            metric_logger.update(loss_p1_hd=p1_hd_value)
         elif stage == 'stage2':
             metric_logger.update(loss_pre_emd=pre_emd_loss)
             metric_logger.update(loss_pre_cd=pre_cd_dist)
@@ -196,10 +208,13 @@ def train_one_epoch(model: torch.nn.Module,
             if stage == 'stage1':
                 # log_writer.update(loss_uni=uniform_loss, head="opt")
                 log_writer.update(loss_vq=loss_vq, head="loss")
+                log_writer.update(loss_p1_emd=p1_emd_loss, head="loss")
+                log_writer.update(loss_p1_cd=p1_cd_dist, head="loss")
+                log_writer.update(loss_p1_hd=p1_hd_value, head="loss")
             elif stage == 'stage2':
-                log_writer.update(pre_emd_loss=pre_emd_loss, head="opt")
-                log_writer.update(pre_cd_dist=pre_cd_dist, head="opt")
-                log_writer.update(pre_hd_value=pre_hd_value, head="opt")
+                log_writer.update(pre_emd_loss=pre_emd_loss, head="loss")
+                log_writer.update(pre_cd_dist=pre_cd_dist, head="loss")
+                log_writer.update(pre_hd_value=pre_hd_value, head="loss")
             #     log_writer.update(loss_rep=rep_loss, head="opt")
 
             log_writer.set_step()
@@ -269,23 +284,29 @@ def validate(epoch, log_dir, data_loader, model, device, visualize=True, stage='
 
 
 @torch.no_grad()
-def test(data_loader, model, device):
+def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, stage='stage1'):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
     num_GT_points = 8192
     model.eval()
     cd_list = []
     hd_list = []
+    output_dir = osp.join(log_dir, "test_vis", f"epoch_{epoch:03d}")
+    os.makedirs(output_dir, exist_ok=True)
     for batch in metric_logger.log_every(data_loader, 200, header):
         points, normalized_points_GT, normalized_points_LR, furthest_dist, centroid, name = batch
 
         ori_GT = points.float().to(device, non_blocking=True).contiguous()
         normalized_points_GT = normalized_points_GT.float().to(device, non_blocking=True).contiguous()
+        normalized_points_LR = normalized_points_LR.float().to(device, non_blocking=True).contiguous() # torch.Size([B, 2048, 3])
         radius = furthest_dist.float().to(device, non_blocking=True).contiguous()
         centroid = centroid.float().to(device, non_blocking=True).contiguous()
 
         with torch.cuda.amp.autocast():
-            input_list, pred_pc = model.pc_prediction(normalized_points_GT)
+            if stage == 'stage1':
+                input_list, pred_pc = model.pc_prediction(normalized_points_GT)
+            elif stage == 'stage2':
+                input_list, pred_pc = model.pc_prediction(normalized_points_LR, stage='stage2')
             idx = pointnet2_utils.furthest_point_sample(pred_pc, num_GT_points)
             pred = pointnet2_utils.gather_operation(pred_pc.permute(0, 2, 1).contiguous(), idx)
 
@@ -298,10 +319,31 @@ def test(data_loader, model, device):
             hd_list.append(hd_value.data.cpu().numpy())
             pred = pred.data.cpu().numpy()
             for i in range(batch_size):
-                save_file = 'visualize/{}/{}.xyz'.format('more_losses', name[i])
-                save_xyz_file(pred[i, ...], save_file)
-    print('mean cd on test set: ', np.mean(cd_list))
-    print('mean hd on test set: ', np.mean(hd_list))
+                save_pred_fp = osp.join(output_dir, name[i]+'.xyz')
+                # save_file = 'visualize/{}/{}.xyz'.format('more_losses', name[i])
+                save_xyz_file(pred[i, ...], save_pred_fp)
+    mean_cd = np.mean(cd_list)
+    mean_hd = np.mean(hd_list)
+    # print('mean cd on test set: ', mean_cd)
+    # print('mean hd on test set: ', mean_hd)
+
+    if mean_cd <= best_cd:
+        best_cd = mean_cd
+        best_cd_epoch = epoch
+    if mean_hd <= best_hd:
+        best_hd = mean_hd
+        best_hd_epoch = epoch
+    metric_logger.update(mean_cd=torch.tensor(mean_cd))
+    metric_logger.update(best_cd=torch.tensor(best_cd))
+    # metric_logger.update(best_cd_epoch=torch.tensor(best_cd_epoch))
+    metric_logger.update(mean_hd=torch.tensor(mean_hd))
+    metric_logger.update(best_hd=torch.tensor(best_hd))
+    # metric_logger.update(best_hd_epoch=torch.tensor(best_hd_epoch))
+    print('Epoch {}: Current cd is {}. Best cd is {} @ epoch {}.'.format(epoch, mean_cd, best_cd, best_cd_epoch))
+    print('Epoch {}: Current hd is {}. Best hd is {} @ epoch {}.'.format(epoch, mean_hd, best_hd, best_hd_epoch))
+    metric_logger.synchronize_between_processes()
+
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 @torch.no_grad()

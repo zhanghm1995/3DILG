@@ -862,7 +862,7 @@ class PUAutoencoder(nn.Module):
         top_k_neareast_idx = pointnet2_utils.knn_point(self.M, seed_xyz,
                                                        points)  # (batch_size, npoint1, k)
         for i in range(top_k_neareast_idx.size()[1]):
-            idx = top_k_neareast_idx[:, i, :]  # torch.Size([1, 1024])
+            idx = top_k_neareast_idx[:, i, :].contiguous()  # torch.Size([1, 1024])
             patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
                                                      idx)
             patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
@@ -1020,7 +1020,7 @@ class VQPC_stage2(nn.Module):
         # z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
         return quant_feat, centers_quantized, coarse_dense_pc  # , loss_vq, perplexity, encodings
 
-    def pc_prediction(self, points):
+    def pc_prediction(self, points, stage='stage1'):
         ## get patch seed from farthestsampling
         seed1_num = 50  # int(points.size()[1] / self.M)
 
@@ -1030,14 +1030,18 @@ class VQPC_stage2(nn.Module):
         seed_xyz = seed_xyz.permute(0, 2, 1).contiguous()
 
         input_list = []
-        top_k_neareast_idx = pointnet2_utils.knn_point(self.M, seed_xyz,
+        if stage == 'stage1':
+            num_points = self.M
+        elif stage == 'stage2':
+            num_points = self.N
+        top_k_neareast_idx = pointnet2_utils.knn_point(num_points, seed_xyz,
                                                        points)  # (batch_size, npoint1, k)
         for i in range(top_k_neareast_idx.size()[1]):
-            idx = top_k_neareast_idx[:, i, :]  # torch.Size([1, 1024])
+            idx = top_k_neareast_idx[:, i, :].contiguous()  # torch.Size([1, 1024])
             patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
                                                      idx)
             patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
-            up_point, _ = self(patch)
+            up_point = self(patch)
 
             input_list.append(patch)
             if i == 0:
@@ -1145,7 +1149,7 @@ def vqpc_stage2(pretrained=False, **kwargs):
         N=256,
         K=1024,
         M=1024,
-        path="/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_refine_100_epoch_more_losses/checkpoint-49.pth",
+        path="/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_refine_100_epoch_more_losses/checkpoint-79.pth", #TODO: move it to bash
         **kwargs)
     model.default_cfg = _cfg()
     if pretrained:

@@ -43,9 +43,10 @@ def build_upsampling_dataset(split, args):
 
     if split == 'train':
         # transform = AxisScaling((0.75, 1.25), True)
-        return PUGAN_Dataset(args.data_path, split="./data/train/train.txt", isTrain=True)
+        return PUGAN_Dataset(args.data_path, split=None, isTrain=True)
     elif split == 'val':
-        return PUGAN_Dataset(args.data_path, split="./data/train/val.txt", isTrain=False)
+        # return PUGAN_Dataset(args.data_path, split="./data/train/val.txt", isTrain=False)
+        return xyz_Dataset_Whole(data_dir='./data/test/gt_FPS_8192/', n_input=2048)
     elif split == 'test':
         return xyz_Dataset_Whole(data_dir='./data/test/gt_FPS_8192/', n_input=2048)
     else:

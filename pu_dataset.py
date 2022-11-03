@@ -250,8 +250,8 @@ class PUGAN_Dataset(data.Dataset):
             self.gt[..., :3] /= np.expand_dims(furthest_distance, axis=-1)
             self.input[..., :3] -= centroid
             self.input[..., :3] /= np.expand_dims(furthest_distance, axis=-1)
-
-        self._load_split_file(split)
+        if not isTrain:
+            self._load_split_file(split)
 
     def _load_split_file(self, split):
         index = np.loadtxt(split).astype(np.int)

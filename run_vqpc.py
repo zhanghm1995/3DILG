@@ -152,8 +152,8 @@ def main(args, ds_init):
         dataset_val = None
     else:
         dataset_val = build_upsampling_dataset('val', args=args)
-    if args.test:
-        dataset_test = build_upsampling_dataset('test', args=args)
+    # if args.test:
+    dataset_test = build_upsampling_dataset('test', args=args)
 
     if args.distributed:
         num_tasks = utils.get_world_size()
@@ -173,9 +173,9 @@ def main(args, ds_init):
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
-        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
-        if args.test:
-            sampler_test = torch.utils.data.SequentialSampler(dataset_test)
+        # sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+        # if args.test:
+        sampler_test = torch.utils.data.SequentialSampler(dataset_test)
 
     global_rank = 0
     if global_rank == 0 and args.log_dir is not None:
@@ -198,7 +198,7 @@ def main(args, ds_init):
     if dataset_val is not None:
         data_loader_val = torch.utils.data.DataLoader(
             dataset_val, sampler=sampler_val,
-            batch_size=32,
+            batch_size=27,
             num_workers=args.num_workers,
             pin_memory=args.pin_mem,
             drop_last=False,
@@ -207,15 +207,15 @@ def main(args, ds_init):
     else:
         data_loader_val = None
 
-    if args.test:
-        data_loader_test = torch.utils.data.DataLoader(
-            dataset_test, sampler=sampler_test,
-            batch_size=1,
-            num_workers=args.num_workers,
-            pin_memory=args.pin_mem,
-            drop_last=False,
-        )
-        print(f"====================Test Dataloader length: {len(data_loader_test)}==============")
+    # if args.test:
+    data_loader_test = torch.utils.data.DataLoader(
+        dataset_test, sampler=sampler_test,
+        batch_size=27,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=False,
+    )
+    print(f"====================Test Dataloader length: {len(data_loader_test)}==============")
 
     model = create_model(
         args.model,
@@ -292,10 +292,12 @@ def main(args, ds_init):
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
+    best_cd = np.inf
+    best_hd = np.inf
     if args.eval:
         validate(0, args.output_dir, data_loader_val, model, device, stage=args.stage)
     if args.test:
-        test(data_loader_test, model, device)
+        test_stats = test(0, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
     else:
         for epoch in range(args.start_epoch, args.epochs):
             if args.distributed:
@@ -315,8 +317,11 @@ def main(args, ds_init):
                     utils.save_model(
                         args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                         loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
-            if data_loader_val is not None and (epoch % args.validation_freq == 0 or epoch + 1 == args.epochs):
-                test_stats = validate(epoch, args.output_dir, data_loader_val, model, device, stage=args.stage)
+            if data_loader_test is not None and (epoch % args.validation_freq == 0 or epoch + 1 == args.epochs):
+                # test_stats = test(epoch, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
+                test_stats = test(epoch, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
+
+                # validate(epoch, args.output_dir, data_loader_val, model, device, stage=args.stage)
 
                 log_stats = {'epoch': epoch,
                              **{f'train_{k}': v for k, v in train_stats.items()},
