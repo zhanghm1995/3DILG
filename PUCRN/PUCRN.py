@@ -25,7 +25,7 @@ class CRNet(torch.nn.Module):
 
     def forward(self, point_cloud, centers, gt=None):
         point_cloud = point_cloud.float().contiguous()
-        p1_pred = self.upsampling_stage_1(point_cloud, centers.permute(0,2,1))
+        p1_pred = self.upsampling_stage_1(point_cloud, centers.permute(0, 2, 1))
         p2_pred = self.upsampling_stage_2(p1_pred)
         p3_pred = self.refinement_stage(p2_pred)
 
@@ -125,9 +125,9 @@ class Transformer_extractor1(nn.Module):
         point_feat: ouput feature, (B, dim_feat, N_input)
     """
 
-    def __init__(self, dim_feat, hidden_dim): #128, 64
+    def __init__(self, dim_feat, hidden_dim):  # 128, 64
         super(Transformer_extractor1, self).__init__()
-        self.mlp_1 = MLP_CONV(in_channel=256, layer_dims=[128, dim_feat]) #3
+        self.mlp_1 = MLP_CONV(in_channel=256, layer_dims=[128, dim_feat])  # 3
         self.mlp_2 = MLP_CONV(in_channel=dim_feat * 2, layer_dims=[dim_feat * 2, dim_feat])
         self.point_transformer = Transformer(dim_feat, dim=hidden_dim)
 

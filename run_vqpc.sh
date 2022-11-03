@@ -21,4 +21,4 @@ torchrun --nproc_per_node=1 --master_port=20002 run_vqpc.py \
          --save_ckpt_freq 10 --validation_freq 1 \
          --save_ckpt --stage 'stage1' \
          --test \
-         --resume "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_refine_100_epoch_more_losses/checkpoint-19.pth"
+         --resume "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_refine/checkpoint-229.pth"

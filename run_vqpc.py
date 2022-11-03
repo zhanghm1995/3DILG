@@ -147,7 +147,7 @@ def main(args, ds_init):
 
     cudnn.benchmark = True
 
-    dataset_train  = build_upsampling_dataset('train', args=args)
+    dataset_train = build_upsampling_dataset('train', args=args)
     if args.disable_eval:
         dataset_val = None
     else:
@@ -292,6 +292,8 @@ def main(args, ds_init):
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
+    if args.eval:
+        validate(0, args.output_dir, data_loader_val, model, device, stage=args.stage)
     if args.test:
         test(data_loader_test, model, device)
     else:
@@ -314,7 +316,7 @@ def main(args, ds_init):
                         args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                         loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
             if data_loader_val is not None and (epoch % args.validation_freq == 0 or epoch + 1 == args.epochs):
-                test_stats = validate(epoch, args.output_dir, data_loader_val, model, device)
+                test_stats = validate(epoch, args.output_dir, data_loader_val, model, device, stage=args.stage)
 
                 log_stats = {'epoch': epoch,
                              **{f'train_{k}': v for k, v in train_stats.items()},

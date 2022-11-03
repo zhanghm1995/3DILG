@@ -28,18 +28,20 @@ import numpy as np
 from pu_metrics import compute_cd_hd_distance
 
 
-def train_batch(model, gt_pc, radius, stage='stage1'):
+def train_batch(model, input_pc, gt_pc, radius, stage='stage1'):
     if stage == 'stage1':
         p1_pred, p2_pred, p3_pred, _, _, loss_vq, _ = model(gt_pc)
-        # outputs, _, _, loss_vq, _ = model(gt_pc)
-        coarse_cd_dist, coarse_hd_value = compute_cd_hd_distance(p2_pred, gt_pc, lamda_cd=100, lamda_hd=50)
-        fine_cd_dist, fine_hd_value = compute_cd_hd_distance(p3_pred, gt_pc, lamda_cd=100, lamda_hd=50)
+        coarse_cd_dist, coarse_hd_value = compute_cd_hd_distance(p2_pred, gt_pc, lamda_cd=100, lamda_hd=10)
+        fine_cd_dist, fine_hd_value = compute_cd_hd_distance(p3_pred, gt_pc, lamda_cd=100, lamda_hd=10)
+
         coarse_emd_loss = 100.0 * compute_emd_loss(p2_pred, gt_pc, radius)
         fine_emd_loss = 100.0 * compute_emd_loss(p3_pred, gt_pc, radius)
+
         # rep_loss = 10.0 * compute_repulsion_loss(outputs)
         # uniform_loss = 10.0 * get_uniform_loss(outputs)
         lamda_coarse = 0.8
-        loss = loss_vq + lamda_coarse * (coarse_emd_loss + coarse_cd_dist + coarse_hd_value) + \
+        loss = loss_vq + \
+               lamda_coarse * (coarse_emd_loss + coarse_cd_dist + coarse_hd_value) + \
                fine_emd_loss + fine_cd_dist + fine_hd_value
 
         return loss, p2_pred, p3_pred, loss_vq.item(), \
@@ -47,15 +49,24 @@ def train_batch(model, gt_pc, radius, stage='stage1'):
                fine_emd_loss.item(), fine_cd_dist.item(), fine_hd_value.item()
 
     elif stage == 'stage2':
-        outputs, _ = model(gt_pc)
+        coarse_dense_pc, p1_pred, p2_pred, p3_pred = model(input_pc)
+        coarse_cd_dist, coarse_hd_value = compute_cd_hd_distance(p2_pred, gt_pc, lamda_cd=100, lamda_hd=10)
+        fine_cd_dist, fine_hd_value = compute_cd_hd_distance(p3_pred, gt_pc, lamda_cd=100, lamda_hd=10)
+        pre_cd_dist, pre_hd_value = compute_cd_hd_distance(coarse_dense_pc, gt_pc, lamda_cd=100, lamda_hd=10)
+        coarse_emd_loss = 100.0 * compute_emd_loss(p2_pred, gt_pc, radius)
+        fine_emd_loss = 100.0 * compute_emd_loss(p3_pred, gt_pc, radius)
+        pre_emd_loss = 100.0 * compute_emd_loss(coarse_dense_pc, gt_pc, radius)
+        lamda_pre = 1
+        lamda_coarse = 0.8
+        lamda_fine = 1
+        loss = lamda_pre * (pre_emd_loss + pre_cd_dist + pre_hd_value) + \
+               lamda_coarse * (coarse_emd_loss + coarse_cd_dist + coarse_hd_value) + \
+               lamda_fine * (fine_emd_loss + fine_cd_dist + fine_hd_value)
 
-        emd_loss = 100.0 * compute_emd_loss(outputs, gt_pc, radius)
-        # rep_loss = 10.0 * compute_repulsion_loss(outputs)
-        # uniform_loss = 10.0 * get_uniform_loss(outputs)
-
-        loss = emd_loss  # + rep_loss
-
-        return loss, outputs, emd_loss.item()  # , rep_loss.item()
+        return loss, coarse_dense_pc, p2_pred, p3_pred, \
+               pre_emd_loss.item(), pre_cd_dist.item(), pre_hd_value.item(), \
+               coarse_emd_loss.item(), coarse_cd_dist.item(), coarse_hd_value.item(), \
+               fine_emd_loss.item(), fine_cd_dist.item(), fine_hd_value.item()
 
 
 def train_one_epoch(model: torch.nn.Module,
@@ -102,10 +113,13 @@ def train_one_epoch(model: torch.nn.Module,
                     loss, p2_pred, p3_pred, loss_vq,\
                     coarse_emd_loss, coarse_cd_dist, coarse_hd_value,\
                     fine_emd_loss, fine_cd_dist, fine_hd_value = \
-                        train_batch(model, gt_data, radius_data, stage)
+                        train_batch(model, gt_data, gt_data, radius_data, stage)
                 elif stage == 'stage2':
-                    loss, outputs, emd_loss = \
-                        train_batch(model, input_data, radius_data, stage)
+                    loss, coarse_dense_pc, p2_pred, p3_pred, \
+                    pre_emd_loss, pre_cd_dist, pre_hd_value, \
+                    coarse_emd_loss, coarse_cd_dist, coarse_hd_value, \
+                    fine_emd_loss, fine_cd_dist, fine_hd_value = \
+                        train_batch(model, input_data, gt_data, radius_data, stage)
 
         loss_value = loss.item()
 
@@ -130,19 +144,24 @@ def train_one_epoch(model: torch.nn.Module,
 
         torch.cuda.synchronize()
 
+
         metric_logger.update(loss=loss_value)
         metric_logger.update(loss_scale=loss_scale_value)
         metric_logger.update(loss_coarse_emd=coarse_emd_loss)
-        metric_logger.update(coarse_cd_dist=coarse_cd_dist)
-        metric_logger.update(coarse_hd_value=coarse_hd_value)
+        metric_logger.update(loss_coarse_cd=coarse_cd_dist)
+        metric_logger.update(loss_coarse_hd=coarse_hd_value)
         metric_logger.update(loss_fine_emd=fine_emd_loss)
-        metric_logger.update(fine_cd_dist=fine_cd_dist)
-        metric_logger.update(fine_hd_value=fine_hd_value)
+        metric_logger.update(loss_fine_cd=fine_cd_dist)
+        metric_logger.update(loss_fine_hd=fine_hd_value)
 
         if stage == 'stage1':
             # metric_logger.update(uniform_loss=uniform_loss)
             metric_logger.update(loss_vq=loss_vq)
-        # elif stage == 'stage2':
+        elif stage == 'stage2':
+            metric_logger.update(loss_pre_emd=pre_emd_loss)
+            metric_logger.update(loss_pre_cd=pre_cd_dist)
+            metric_logger.update(loss_pre_hd=pre_hd_value)
+
         #     metric_logger.update(loss_rep=rep_loss)
 
         min_lr = 10.
@@ -162,23 +181,25 @@ def train_one_epoch(model: torch.nn.Module,
 
         if log_writer is not None:
             log_writer.update(loss=loss_value, head="loss")
-            log_writer.update(loss_scale=loss_scale_value, head="opt")
+            log_writer.update(coarse_emd_loss=coarse_emd_loss, head="loss")
+            log_writer.update(coarse_cd_dist=coarse_cd_dist, head="loss")
+            log_writer.update(coarse_hd_value=coarse_hd_value, head="loss")
+            log_writer.update(fine_emd_loss=fine_emd_loss, head="loss")
+            log_writer.update(fine_cd_dist=fine_cd_dist, head="loss")
+            log_writer.update(fine_hd_value=fine_hd_value, head="loss")
             log_writer.update(lr=max_lr, head="opt")
             log_writer.update(min_lr=min_lr, head="opt")
             log_writer.update(weight_decay=weight_decay_value, head="opt")
             log_writer.update(grad_norm=grad_norm, head="opt")
-            log_writer.update(coarse_loss_emd=coarse_emd_loss, head="opt")
-            log_writer.update(coarse_cd_dist=coarse_cd_dist, head="opt")
-            log_writer.update(coarse_hd_value=coarse_hd_value, head="opt")
-            log_writer.update(fine_emd_loss=fine_emd_loss, head="opt")
-            log_writer.update(fine_cd_dist=fine_cd_dist, head="opt")
-            log_writer.update(fine_hd_value=fine_hd_value, head="opt")
-
+            log_writer.update(loss_scale=loss_scale_value, head="opt")
 
             if stage == 'stage1':
                 # log_writer.update(loss_uni=uniform_loss, head="opt")
-                log_writer.update(loss_vq=loss_vq, head="opt")
-            # elif stage == 'stage2':
+                log_writer.update(loss_vq=loss_vq, head="loss")
+            elif stage == 'stage2':
+                log_writer.update(pre_emd_loss=pre_emd_loss, head="opt")
+                log_writer.update(pre_cd_dist=pre_cd_dist, head="opt")
+                log_writer.update(pre_hd_value=pre_hd_value, head="opt")
             #     log_writer.update(loss_rep=rep_loss, head="opt")
 
             log_writer.set_step()
@@ -209,9 +230,9 @@ def validate(epoch, log_dir, data_loader, model, device, visualize=True, stage='
         with torch.cuda.amp.autocast():
             if stage == 'stage1':
                 p3_pred, loss_vq = model(gt_pc)
-                pred = p3_pred
             elif stage == 'stage2':
-                pred, _ = model(lr_pc)
+                p3_pred = model(lr_pc)
+            pred = p3_pred
 
             pred = pred.float().cuda().contiguous()
             cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=1, lamda_hd=1)
