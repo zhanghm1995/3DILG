@@ -127,6 +127,8 @@ def get_args():
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
+    parser.add_argument('--stage', default='stage2', type=str)
+    # parser.add_argument('--codebook_path', default="/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_offset/checkpoint-519.pth", type=str)
     
     ds_init = None
     return parser.parse_args(), ds_init
@@ -190,6 +192,7 @@ def main(args, ds_init):
         drop_last=True,
         prefetch_factor=1,
     )
+
     print(f"====================Training Dataloader length: {len(data_loader_train)}==============")
 
     if dataset_val is not None:
@@ -280,8 +283,8 @@ def main(args, ds_init):
         args.weight_decay, args.weight_decay_end, args.epochs, num_training_steps_per_epoch)
     print("Max WD = %.7f, Min WD = %.7f" % (max(wd_schedule_values), min(wd_schedule_values)))
 
-    criterion = torch.nn.BCEWithLogitsLoss()
-    print("criterion = %s" % str(criterion))
+    # criterion = torch.nn.BCEWithLogitsLoss()
+    # print("criterion = %s" % str(criterion))
 
     utils.auto_load_model(
         args=args, model=model, model_without_ddp=model_without_ddp,
@@ -297,11 +300,11 @@ def main(args, ds_init):
                 data_loader_train.sampler.set_epoch(epoch)
 
             train_stats = train_one_epoch(
-                model, criterion, data_loader_train, optimizer,
+                model, data_loader_train, optimizer,
                 device, epoch, loss_scaler, args.clip_grad, model_ema,
                 log_writer=log_writer, start_steps=epoch * num_training_steps_per_epoch,
                 lr_schedule_values=lr_schedule_values, wd_schedule_values=wd_schedule_values,
-                num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq,
+                num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq, stage=args.stage
             )
             # print(train_stats)
 

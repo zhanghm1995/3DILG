@@ -288,7 +288,6 @@ class PUGAN_Dataset(data.Dataset):
             #    input_data = utils.rotate_perturbation_point_cloud(input_data, angle_sigma=0.03, angle_clip=0.09)
         else:
             raise NotImplementedError
-
         return torch.FloatTensor(input_data), torch.FloatTensor(gt_data), torch.FloatTensor(radius_data)
 
 class xyz_Dataset_Whole(data.Dataset):
