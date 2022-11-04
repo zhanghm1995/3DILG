@@ -9,7 +9,6 @@ from torch import Tensor
 from torch.nn.utils import weight_norm
 
 from timm.models.registry import register_model
-# from timm.models.layers import to_3tuple
 from timm.models.layers import drop_path, trunc_normal_
 
 from torch.nn import Sequential as Seq
@@ -23,14 +22,12 @@ from torch_scatter import scatter_max
 
 from einops import rearrange
 from pointnet2.utils.pointnet2_utils import furthest_point_sample
-from math import log
-from dis_pu.layers import (
-    FeatureExtractor,
-    DuplicateUp,
-    CoordinateRegressor,
-    PointShuffle)
+# from dis_pu.layers import (
+#     FeatureExtractor,
+#     DuplicateUp,
+#     CoordinateRegressor,
+#     PointShuffle)
 from pointnet2.utils import pointnet2_utils
-from vis_util import save_xyz_file
 from typing import Optional, List
 from PUCRN.PUCRN import CRNet
 

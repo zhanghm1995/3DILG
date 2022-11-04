@@ -21,7 +21,7 @@ from timm.utils import ModelEma
 
 import utils
 from pu_losses import *
-from vis_util import save_xyz_file
+# from vis_util import save_xyz_file
 from pointnet2.utils import pointnet2_utils
 from einops import repeat, rearrange
 import numpy as np
@@ -321,7 +321,8 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, stage='st
             for i in range(batch_size):
                 save_pred_fp = osp.join(output_dir, name[i]+'.xyz')
                 # save_file = 'visualize/{}/{}.xyz'.format('more_losses', name[i])
-                save_xyz_file(pred[i, ...], save_pred_fp)
+                # save_xyz_file(pred[i, ...], save_pred_fp)
+                np.savetxt(save_pred_fp, pred[i, ...])
     mean_cd = np.mean(cd_list)
     mean_hd = np.mean(hd_list)
     # print('mean cd on test set: ', mean_cd)
