@@ -294,6 +294,8 @@ def main(args, ds_init):
     start_time = time.time()
     best_cd = np.inf
     best_hd = np.inf
+    best_cd_epoch = -1
+    best_hd_epoch = -1
     if args.eval:
         validate(0, args.output_dir, data_loader_val, model, device, stage=args.stage)
     if args.test:
@@ -319,7 +321,9 @@ def main(args, ds_init):
                         loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
             if data_loader_test is not None and (epoch % args.validation_freq == 0 or epoch + 1 == args.epochs):
                 # test_stats = test(epoch, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
-                test_stats = test(epoch, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
+                test_stats, best_cd, best_cd_epoch, best_hd, best_hd_epoch = test(
+                    epoch, args.output_dir, data_loader_test, model, device, 
+                    best_cd, best_cd_epoch, best_hd, best_hd_epoch, stage=args.stage)
 
                 # validate(epoch, args.output_dir, data_loader_val, model, device, stage=args.stage)
 

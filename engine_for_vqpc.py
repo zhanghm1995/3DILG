@@ -284,7 +284,9 @@ def validate(epoch, log_dir, data_loader, model, device, visualize=True, stage='
 
 
 @torch.no_grad()
-def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, stage='stage1'):
+def test(epoch, log_dir, data_loader, model, device, 
+         best_cd, best_cd_epoch, best_hd, best_hd_epoch,
+         stage='stage1'):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
     num_GT_points = 8192
@@ -344,7 +346,8 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, stage='st
     print('Epoch {}: Current hd is {}. Best hd is {} @ epoch {}.'.format(epoch, mean_hd, best_hd, best_hd_epoch))
     metric_logger.synchronize_between_processes()
 
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, \
+           best_cd, best_cd_epoch, best_hd, best_hd_epoch
 
 
 @torch.no_grad()
