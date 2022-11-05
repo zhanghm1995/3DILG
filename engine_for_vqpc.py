@@ -29,12 +29,11 @@ from pu_metrics import compute_cd_hd_distance
 
 
 def train_batch(model, input_pc, gt_pc, radius, stage='stage1'):
+    idx = pointnet2_utils.furthest_point_sample(gt_pc, 512)
+    gt_pc_FPS_512 = pointnet2_utils.gather_operation(gt_pc.permute(0, 2, 1).contiguous(), idx)
+    gt_pc_FPS_512 = gt_pc_FPS_512.permute(0, 2, 1).contiguous()
     if stage == 'stage1':
         p1_pred, p2_pred, p3_pred, _, _, loss_vq, _ = model(gt_pc)
-
-        idx = pointnet2_utils.furthest_point_sample(gt_pc, 512)
-        gt_pc_FPS_512 = pointnet2_utils.gather_operation(gt_pc.permute(0, 2, 1).contiguous(), idx)
-        gt_pc_FPS_512 = gt_pc_FPS_512.permute(0, 2, 1).contiguous()
         p1_cd_dist, p1_hd_value = compute_cd_hd_distance(p1_pred, gt_pc_FPS_512, lamda_cd=100, lamda_hd=10)
         coarse_cd_dist, coarse_hd_value = compute_cd_hd_distance(p2_pred, gt_pc, lamda_cd=100, lamda_hd=10)
         fine_cd_dist, fine_hd_value = compute_cd_hd_distance(p3_pred, gt_pc, lamda_cd=100, lamda_hd=10)
@@ -57,23 +56,25 @@ def train_batch(model, input_pc, gt_pc, radius, stage='stage1'):
                fine_emd_loss.item(), fine_cd_dist.item(), fine_hd_value.item()
 
     elif stage == 'stage2':
-        coarse_dense_pc, p1_pred, p2_pred, p3_pred = model(input_pc)
+        p1_pred, p2_pred, p3_pred = model(input_pc)  # coarse_dense_pc
+        p1_cd_dist, p1_hd_value = compute_cd_hd_distance(p1_pred, gt_pc_FPS_512, lamda_cd=100, lamda_hd=10)
         coarse_cd_dist, coarse_hd_value = compute_cd_hd_distance(p2_pred, gt_pc, lamda_cd=100, lamda_hd=10)
         fine_cd_dist, fine_hd_value = compute_cd_hd_distance(p3_pred, gt_pc, lamda_cd=100, lamda_hd=10)
-        pre_cd_dist, pre_hd_value = compute_cd_hd_distance(coarse_dense_pc, gt_pc, lamda_cd=100, lamda_hd=10)
+        # pre_cd_dist, pre_hd_value = compute_cd_hd_distance(coarse_dense_pc, gt_pc, lamda_cd=100, lamda_hd=10)
 
+        p1_emd_loss = 100.0 * compute_emd_loss(p1_pred, gt_pc_FPS_512, radius)
         coarse_emd_loss = 100.0 * compute_emd_loss(p2_pred, gt_pc, radius)
         fine_emd_loss = 100.0 * compute_emd_loss(p3_pred, gt_pc, radius)
-        pre_emd_loss = 100.0 * compute_emd_loss(coarse_dense_pc, gt_pc, radius)
-        lamda_pre = 1
-        lamda_coarse = 0.8
+        # pre_emd_loss = 100.0 * compute_emd_loss(coarse_dense_pc, gt_pc, radius)
+        lamda_p1 = 1
+        lamda_coarse = 1
         lamda_fine = 1
-        loss = lamda_pre * (pre_emd_loss + pre_cd_dist + pre_hd_value) + \
+        loss = lamda_p1 * (p1_emd_loss + p1_cd_dist + p1_hd_value) + \
                lamda_coarse * (coarse_emd_loss + coarse_cd_dist + coarse_hd_value) + \
                lamda_fine * (fine_emd_loss + fine_cd_dist + fine_hd_value)
 
-        return loss, coarse_dense_pc, p2_pred, p3_pred, \
-               pre_emd_loss.item(), pre_cd_dist.item(), pre_hd_value.item(), \
+        return loss, p1_pred, p2_pred, p3_pred, \
+               p1_emd_loss.item(), p1_cd_dist.item(), p1_hd_value.item(), \
                coarse_emd_loss.item(), coarse_cd_dist.item(), coarse_hd_value.item(), \
                fine_emd_loss.item(), fine_cd_dist.item(), fine_hd_value.item()
 
@@ -125,8 +126,8 @@ def train_one_epoch(model: torch.nn.Module,
                     fine_emd_loss, fine_cd_dist, fine_hd_value = \
                         train_batch(model, gt_data, gt_data, radius_data, stage)
                 elif stage == 'stage2':
-                    loss, coarse_dense_pc, p2_pred, p3_pred, \
-                    pre_emd_loss, pre_cd_dist, pre_hd_value, \
+                    loss, p1_pred, p2_pred, p3_pred, \
+                    p1_emd_loss, p1_cd_dist, p1_hd_value, \
                     coarse_emd_loss, coarse_cd_dist, coarse_hd_value, \
                     fine_emd_loss, fine_cd_dist, fine_hd_value = \
                         train_batch(model, input_data, gt_data, radius_data, stage)
@@ -156,6 +157,9 @@ def train_one_epoch(model: torch.nn.Module,
 
         metric_logger.update(loss=loss_value)
         metric_logger.update(loss_scale=loss_scale_value)
+        metric_logger.update(loss_p1_emd=p1_emd_loss)
+        metric_logger.update(loss_p1_cd=p1_cd_dist)
+        metric_logger.update(loss_p1_hd=p1_hd_value)
         metric_logger.update(loss_coarse_emd=coarse_emd_loss)
         metric_logger.update(loss_coarse_cd=coarse_cd_dist)
         metric_logger.update(loss_coarse_hd=coarse_hd_value)
@@ -166,15 +170,7 @@ def train_one_epoch(model: torch.nn.Module,
         if stage == 'stage1':
             # metric_logger.update(uniform_loss=uniform_loss)
             metric_logger.update(loss_vq=loss_vq)
-            metric_logger.update(loss_p1_emd=p1_emd_loss)
-            metric_logger.update(loss_p1_cd=p1_cd_dist)
-            metric_logger.update(loss_p1_hd=p1_hd_value)
-        elif stage == 'stage2':
-            metric_logger.update(loss_pre_emd=pre_emd_loss)
-            metric_logger.update(loss_pre_cd=pre_cd_dist)
-            metric_logger.update(loss_pre_hd=pre_hd_value)
-
-        #     metric_logger.update(loss_rep=rep_loss)
+        # elif stage == 'stage2':
 
         min_lr = 10.
         max_lr = 0.
@@ -204,17 +200,18 @@ def train_one_epoch(model: torch.nn.Module,
             log_writer.update(weight_decay=weight_decay_value, head="opt")
             log_writer.update(grad_norm=grad_norm, head="opt")
             log_writer.update(loss_scale=loss_scale_value, head="opt")
+            log_writer.update(loss_p1_emd=p1_emd_loss, head="loss")
+            log_writer.update(loss_p1_cd=p1_cd_dist, head="loss")
+            log_writer.update(loss_p1_hd=p1_hd_value, head="loss")
 
             if stage == 'stage1':
                 # log_writer.update(loss_uni=uniform_loss, head="opt")
                 log_writer.update(loss_vq=loss_vq, head="loss")
-                log_writer.update(loss_p1_emd=p1_emd_loss, head="loss")
-                log_writer.update(loss_p1_cd=p1_cd_dist, head="loss")
-                log_writer.update(loss_p1_hd=p1_hd_value, head="loss")
-            elif stage == 'stage2':
-                log_writer.update(pre_emd_loss=pre_emd_loss, head="loss")
-                log_writer.update(pre_cd_dist=pre_cd_dist, head="loss")
-                log_writer.update(pre_hd_value=pre_hd_value, head="loss")
+
+            # elif stage == 'stage2':
+            #     log_writer.update(pre_emd_loss=pre_emd_loss, head="loss")
+            #     log_writer.update(pre_cd_dist=pre_cd_dist, head="loss")
+            #     log_writer.update(pre_hd_value=pre_hd_value, head="loss")
             #     log_writer.update(loss_rep=rep_loss, head="opt")
 
             log_writer.set_step()
@@ -284,7 +281,8 @@ def validate(epoch, log_dir, data_loader, model, device, visualize=True, stage='
 
 
 @torch.no_grad()
-def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, stage='stage1'):
+def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_epoch=0, best_hd_epoch=0,
+         stage='stage1'):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
     num_GT_points = 8192
@@ -298,7 +296,8 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, stage='st
 
         ori_GT = points.float().to(device, non_blocking=True).contiguous()
         normalized_points_GT = normalized_points_GT.float().to(device, non_blocking=True).contiguous()
-        normalized_points_LR = normalized_points_LR.float().to(device, non_blocking=True).contiguous() # torch.Size([B, 2048, 3])
+        normalized_points_LR = normalized_points_LR.float().to(device,
+                                                               non_blocking=True).contiguous()  # torch.Size([B, 2048, 3])
         radius = furthest_dist.float().to(device, non_blocking=True).contiguous()
         centroid = centroid.float().to(device, non_blocking=True).contiguous()
 
@@ -309,23 +308,23 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, stage='st
                 input_list, pred_pc = model.pc_prediction(normalized_points_LR, stage='stage2')
             idx = pointnet2_utils.furthest_point_sample(pred_pc, num_GT_points)
             pred = pointnet2_utils.gather_operation(pred_pc.permute(0, 2, 1).contiguous(), idx)
+            # print('==================',pred.permute(0, 2, 1).contiguous().size(), normalized_points_GT.size())
+            cd, hd_value = compute_cd_hd_distance(pred.permute(0, 2, 1).contiguous(), normalized_points_GT)
+            cd_list.append(cd.data.cpu().numpy())
+            hd_list.append(hd_value.data.cpu().numpy())
 
             batch_size = points.shape[0]
             radius = repeat(radius, 'r -> r w h', w=1, h=1).contiguous()
             pred = pred * radius + centroid.unsqueeze(2).repeat(1, 1, 8192)  # torch.Size([4, 3, 8192])
             pred = pred.permute(0, 2, 1)
-            cd, hd_value = compute_cd_hd_distance(pred, ori_GT)
-            cd_list.append(cd.data.cpu().numpy())
-            hd_list.append(hd_value.data.cpu().numpy())
             pred = pred.data.cpu().numpy()
-            for i in range(batch_size):
-                save_pred_fp = osp.join(output_dir, name[i]+'.xyz')
-                # save_file = 'visualize/{}/{}.xyz'.format('more_losses', name[i])
-                save_xyz_file(pred[i, ...], save_pred_fp)
+            if epoch % 5 == 0:
+                for i in range(batch_size):
+                    save_pred_fp = osp.join(output_dir, name[i] + '.xyz')
+                    # save_file = 'visualize/{}/{}.xyz'.format('more_losses', name[i])
+                    save_xyz_file(pred[i, ...], save_pred_fp)
     mean_cd = np.mean(cd_list)
     mean_hd = np.mean(hd_list)
-    # print('mean cd on test set: ', mean_cd)
-    # print('mean hd on test set: ', mean_hd)
 
     if mean_cd <= best_cd:
         best_cd = mean_cd
@@ -343,7 +342,8 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, stage='st
     print('Epoch {}: Current hd is {}. Best hd is {} @ epoch {}.'.format(epoch, mean_hd, best_hd, best_hd_epoch))
     metric_logger.synchronize_between_processes()
 
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    return {k: meter.global_avg for k, meter in
+            metric_logger.meters.items()}, best_cd, best_hd, best_cd_epoch, best_hd_epoch
 
 
 @torch.no_grad()

@@ -32,7 +32,7 @@ from dis_pu.layers import (
 from pointnet2.utils import pointnet2_utils
 from vis_util import save_xyz_file
 from typing import Optional, List
-from PUCRN.PUCRN import CRNet
+from PUCRN.PUCRN import CRNet, ori_CRNet
 
 
 def _cfg(url='', **kwargs):
@@ -572,7 +572,8 @@ class PUDecoder(nn.Module):
                                              )
 
         self.up_ratio = up_ratio
-        self.PUCRN = CRNet(up_ratio=4)
+
+        self.PUCRN = CRNet(up_ratio=4)  # self.CRNet_upsample
 
     def forward(self, latents, centers):
         '''
@@ -590,7 +591,7 @@ class PUDecoder(nn.Module):
             [p1_pred, p2_pred, p3_pred], gt = self.PUCRN(latents, centers)
             return p1_pred, p2_pred, p3_pred
         else:
-            p3_pred = self.PUCRN(latents, centers)
+            p3_pred = self.PUCRN(latents, centers)  # self.CRNet_upsample
             return p3_pred
 
 
@@ -662,7 +663,7 @@ class Encoder(nn.Module):
         self.ratio = N / M
         self.k = num_neighbors
 
-    def forward(self, pc):
+    def forward(self, pc, fps_sample=False):
         # pc: B x N x D
         B, N, D = pc.shape
         assert N == self.M
@@ -673,8 +674,16 @@ class Encoder(nn.Module):
         batch = torch.repeat_interleave(batch, N)
 
         pos = flattened
-
-        idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
+        if fps_sample:
+            idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
+        else:
+            num_needed = int(N * self.ratio)
+            idx = pos.new_zeros((B, num_needed), dtype=torch.long)
+            for i in range(B):
+                count = i * N
+                m_idx = torch.randperm(N, device=pc.device)[:num_needed]
+                idx[i] = count + m_idx
+            idx = idx.view(-1)
 
         row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
         edge_index = torch.stack([col, row], dim=0)
@@ -737,36 +746,79 @@ class Stage2Encoder(nn.Module):
         self.up_ratio = M / N  # 4
         self.k = num_neighbors  # smaller 32->8
         self.step_up_rate = int(np.sqrt(self.up_ratio))
-        from PUCRN.PUCRN import SubNetwork
-        self.upsampling_stage_1 = SubNetwork(up_ratio=self.step_up_rate)
-        self.upsampling_stage_2 = SubNetwork(up_ratio=self.step_up_rate)
 
-    def forward(self, pc):
+        # stage1_weights = torch.load(path, map_location="cpu")["model"]
+        # # embedding_state_dict = {}
+        # decoder_state_dict = {}
+        # for k, v in stage1_weights.items():
+        #     if 'codebook' in k:
+        #         # embedding_state_dict[k] = v
+        #         self.codebook.embedding.weight.data = stage1_weights['codebook.embedding.weight']
+        #     elif 'decoder' in k:
+        #         decoder_state_dict[k.split('decoder.')[-1]] = v
+        # # self.codebook.load_state_dict(embedding_state_dict)
+        # # self.codebook.embedding.load_state_dict(stage1_weights['embedding.weight'])
+        # # self.codebook.embedding.weight.data = stage1_weights['params_ema']['embedding.weight']
+        # self.decoder.load_state_dict(decoder_state_dict)
+
+        self.first_upsample_CRNet = ori_CRNet(self.up_ratio)
+        ckpt = "./pretrain/model.pth"
+        self.first_upsample_CRNet.load_state_dict(torch.load(ckpt)['net_state_dict'])
+        for param in self.first_upsample_CRNet.parameters():
+            param.requires_grad = False
+        self.linear_start = nn.Conv1d(3, dim, 1)
+
+    def forward(self, pc, direct_predict_code=True, load_pretrained_upsampling_net=True, pointnet=True):
         '''
-        pc: input LR pc: 256 points [B, 256, 3]
+        pc: input LR point cloud: 256 points [B, 256, 3]
         N: num of points in sparse point cloud
         '''
         # TODO: upsample first
-        coarse_dense_pc = self.upsampling_stage_1(pc.permute(0, 2, 1))  # [B, 3, 512]
-        coarse_dense_pc = self.upsampling_stage_2(coarse_dense_pc)  # [B, 3, 1024]
-        coarse_dense_pc = coarse_dense_pc.permute(0, 2, 1)  # [B, 1024, 3]
-        B, N, D = coarse_dense_pc.shape
-        assert N == self.M  # 1024
+        if direct_predict_code:
+            B, N, D = pc.shape
+            assert N == self.N  # 256
+            flattened = rearrange(pc, 'B N D -> (B N) D').contiguous()  # [B*256, 3] flattened sparse pc
 
-        # flattened = pc.view(B * N, D)
-        flattened = rearrange(coarse_dense_pc, 'B N D -> (B N) D').contiguous()  # [B*1024, 3]
+            batch = torch.arange(B).to(pc.device)
+            batch = torch.repeat_interleave(batch, N)
 
-        batch = torch.arange(B).to(pc.device)
-        batch = torch.repeat_interleave(batch, N)
+            pos = flattened
+            if pointnet:
+                row, col = knn(pos, pos, self.k, batch, batch) # // 4
+                edge_index = torch.stack([col, row], dim=0)
+                x = self.conv(pos, pos, edge_index, self.basis)
+            else:
+                x = self.linear_start(pc.permute(0, 2, 1))
 
-        pos = flattened # torch.Size([8192, 3])
-        idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
+        else:
+            if load_pretrained_upsampling_net:
+                if self.training:
+                    [p1_pred, p2_pred, p3_pred], gt = self.first_upsample_CRNet(pc.permute(0, 2, 1))
+                else:
+                    p3_pred = self.first_upsample_CRNet(pc.permute(0, 2, 1))
+                coarse_dense_pc = p3_pred  # [B, 1024, 3]
+            else:
+                coarse_dense_pc = self.upsampling_stage_1(pc.permute(0, 2, 1))  # [B, 3, 512]
+                coarse_dense_pc = self.upsampling_stage_2(coarse_dense_pc)  # [B, 3, 1024]
+                coarse_dense_pc = coarse_dense_pc.permute(0, 2, 1)  # [B, 1024, 3]
 
-        row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
-        edge_index = torch.stack([col, row], dim=0)
+            B, N, D = coarse_dense_pc.shape
+            assert N == self.M  # 1024
 
-        x = self.conv(pos, pos[idx], edge_index, self.basis)
-        pos, batch = pos[idx], batch[idx]
+            # flattened = pc.view(B * N, D)
+            flattened = rearrange(coarse_dense_pc, 'B N D -> (B N) D').contiguous()  # [B*1024, 3] flattened dense pc
+
+            batch = torch.arange(B).to(pc.device)
+            batch = torch.repeat_interleave(batch, N)
+
+            pos = flattened  # torch.Size([8192, 3])
+            idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
+
+            row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
+            edge_index = torch.stack([col, row], dim=0)
+
+            x = self.conv(pos, pos[idx], edge_index, self.basis)
+            pos, batch = pos[idx], batch[idx]
 
         x = x.view(B, -1, x.shape[-1])
         pos = pos.view(B, -1, 3)
@@ -777,7 +829,7 @@ class Stage2Encoder(nn.Module):
 
         out = self.transformer(x, embeddings)
 
-        return out, pos, coarse_dense_pc # [B, 1024, 3]
+        return out, pos  # , coarse_dense_pc # [B, 1024, 3]
 
 
 class Autoencoder(nn.Module):
@@ -937,6 +989,7 @@ class VQPC_stage2(nn.Module):
         self.decoder = PUDecoder(latent_channel=dim)
 
         self.codebook = VectorQuantizer2(K, dim)
+
         self.M = M
         self.N = N
 
@@ -969,11 +1022,17 @@ class VQPC_stage2(nn.Module):
                 # embedding_state_dict[k] = v
                 self.codebook.embedding.weight.data = stage1_weights['codebook.embedding.weight']
             elif 'decoder' in k:
-                decoder_state_dict[k.split('decoder.')[-1]] = v
+                k = k.split('decoder.')[-1]
+                # if 'PUCRN' in k:
+                #     k = k.replace('PUCRN', 'CRNet_upsample')
+                decoder_state_dict[k] = v
+
         # self.codebook.load_state_dict(embedding_state_dict)
         # self.codebook.embedding.load_state_dict(stage1_weights['embedding.weight'])
         # self.codebook.embedding.weight.data = stage1_weights['params_ema']['embedding.weight']
+
         self.decoder.load_state_dict(decoder_state_dict)
+
         if fix_weights:
             for param in self.codebook.parameters():
                 param.requires_grad = False
@@ -985,10 +1044,10 @@ class VQPC_stage2(nn.Module):
     def no_weight_decay(self):
         return {}
 
-    def Stage2Encode(self, x, bins=256):
+    def Stage2Encode(self, x, bins=256, generate_index='predict'):
         B, _, _ = x.shape
 
-        fps_feature, centers, coarse_dense_pc = self.Stage2Encoder(x)  # B x C x N, B x N x 3
+        fps_feature, centers = self.Stage2Encoder(x)  # B x C x N, B x N x 3
 
         # # ################# Transformer ###################
         # # quant_feat, codebook_loss, quant_stats = self.quantize(lq_feat)
@@ -1002,23 +1061,43 @@ class VQPC_stage2(nn.Module):
         #
         # # output logits
         # logits = self.idx_pred_layer(query_emb)  # (hw)bn
+        if generate_index == 'predict':
+            # z_e_x = rearrange(fps_feature, 'B C N -> (B N) C').contiguous()  # z_e_x: torch.Size([32*256, 256])
+            z_e_x = rearrange(fps_feature, 'B C N -> N B C').contiguous()  # z_e_x: torch.Size([32*256, 256])
 
-        z_e_x = rearrange(fps_feature, 'B C N -> (B N) C').contiguous()  # z_e_x: torch.Size([32*256, 256])
-        logits = self.idx_pred_layer(z_e_x)  # (hw)bn    logits: torch.Size([32*256, 1024])
-        # logits = logits.permute(1, 0, 2)  # (hw)bn -> b(hw)n
+            logits = self.idx_pred_layer(z_e_x)  # NBC    logits: torch.Size([32*256, 1024])
+            logits = logits.permute(1, 0, 2)  # (hw)bn -> b(hw)n
+            soft_one_hot = F.softmax(logits, dim=2)
+            # soft_one_hot = F.softmax(logits, dim=1)
+            if self.training:
+                quant_feat = torch.einsum('btn,nc->btc', [soft_one_hot, self.codebook.embedding.weight])
+                # b(hw)c -> bc(hw) -> bchw
+                quant_feat = quant_feat.permute(0, 2, 1).view(fps_feature.shape)
+            else:
+                _, top_idx = torch.topk(soft_one_hot, 1, dim=2)
+                quant_feat = self.codebook.get_codebook_entry(top_idx,
+                                                              shape=fps_feature.shape)  # [x.shape[0], 16, 16, 256]
 
-        # soft_one_hot = F.softmax(logits, dim=2)
-        soft_one_hot = F.softmax(logits, dim=1)
+            quant_feat = adaptive_instance_normalization(quant_feat, fps_feature)
 
-        _, top_idx = torch.topk(soft_one_hot, 1, dim=1)
-        quant_feat = self.codebook.get_codebook_entry(top_idx, shape=fps_feature.shape)  # [x.shape[0], 16, 16, 256]
+        elif generate_index == 'neareatneighbor':
+            # z = rearrange(z, 'b c N-> b N c').contiguous()
+            z_flattened = rearrange(fps_feature, 'B C N -> (B N) C').contiguous()
+            # z_flattened = rearrange(fps_feature, 'B N C -> (B N) C').contiguous()
+            # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
 
-        quant_feat = adaptive_instance_normalization(quant_feat, fps_feature)
+            d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
+                torch.sum(self.codebook.embedding.weight ** 2, dim=1) - 2 * \
+                torch.einsum('bd,dn->bn', z_flattened, rearrange(self.codebook.embedding.weight, 'n d -> d n'))
+
+            min_encoding_indices = torch.argmin(d, dim=1)
+            quant_feat = self.codebook.embedding(min_encoding_indices).view(fps_feature.shape)
+            quant_feat = fps_feature + (quant_feat - fps_feature).detach()
 
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 
         # z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
-        return quant_feat, centers_quantized, coarse_dense_pc  # , loss_vq, perplexity, encodings
+        return quant_feat, centers_quantized  # , loss_vq, perplexity, encodings
 
     def pc_prediction(self, points, stage='stage1'):
         ## get patch seed from farthestsampling
@@ -1051,13 +1130,13 @@ class VQPC_stage2(nn.Module):
         return input_list, result
 
     def forward(self, x):
-        quant_feat, centers_quantized, coarse_dense_pc = self.Stage2Encode(x)
+        quant_feat, centers_quantized = self.Stage2Encode(x)
 
         centers = centers_quantized.float() / 255.0 * 2 - 1
 
         if self.training:
             p1_pred, p2_pred, p3_pred = self.decoder(quant_feat, centers)
-            return coarse_dense_pc.contiguous(), p1_pred, p2_pred, p3_pred
+            return p1_pred, p2_pred, p3_pred  # coarse_dense_pc.contiguous()
         else:
             p3_pred = self.decoder(quant_feat, centers)
             return p3_pred
@@ -1149,7 +1228,8 @@ def vqpc_stage2(pretrained=False, **kwargs):
         N=256,
         K=1024,
         M=1024,
-        path="/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_refine_100_epoch_more_losses/checkpoint-79.pth", #TODO: move it to bash
+        path="/mntnfs/cui_data4/yanchengwang/3DILG/pretrain/checkpoint-random-29.pth",
+        # TODO: move it to bash
         **kwargs)
     model.default_cfg = _cfg()
     if pretrained:

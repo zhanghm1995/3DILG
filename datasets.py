@@ -39,7 +39,7 @@ def build_shape_surface_occupancy_dataset(split, args):
 
 
 def build_upsampling_dataset(split, args):
-    from pu_dataset import PUGAN_Dataset, xyz_Dataset_Whole
+    from pu_dataset import PUGAN_Dataset, xyz_Dataset_Whole, xyz_Pair_Dataset
 
     if split == 'train':
         # transform = AxisScaling((0.75, 1.25), True)
@@ -49,6 +49,8 @@ def build_upsampling_dataset(split, args):
         return xyz_Dataset_Whole(data_dir='./data/test/gt_FPS_8192/', n_input=2048)
     elif split == 'test':
         return xyz_Dataset_Whole(data_dir='./data/test/gt_FPS_8192/', n_input=2048)
+    elif split == 'PU1K':
+        return xyz_Pair_Dataset(lr_dir='/mntnfs/cui_data4/yanchengwang/DATASET/PU1K/test/input_2048/input_2048/', gt_dir='/mntnfs/cui_data4/yanchengwang/DATASET/PU1K/test/input_2048/gt_8192/', n_input=2048)
     else:
         raise NotImplementedError
 

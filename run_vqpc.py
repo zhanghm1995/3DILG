@@ -30,6 +30,7 @@ from utils import NativeScalerWithGradNormCount as NativeScaler
 
 import modeling_vqvae
 
+
 def get_args():
     parser = argparse.ArgumentParser('VQVAE', add_help=False)
     parser.add_argument('--batch_size', default=128, type=int)
@@ -58,11 +59,11 @@ def get_args():
     # Optimizer parameters
     parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
                         help='Optimizer (default: "adamw"')
-    parser.add_argument('--opt_eps', default=1e-8, type=float, metavar='EPSILON', # 1e-6
+    parser.add_argument('--opt_eps', default=1e-8, type=float, metavar='EPSILON',  # 1e-6
                         help='Optimizer Epsilon (default: 1e-8)')
     parser.add_argument('--opt_betas', default=None, type=float, nargs='+', metavar='BETA',
                         help='Optimizer Betas (default: None, use opt default)')
-    parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM', #
+    parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',  #
                         help='Clip gradient norm (default: None, no clipping)')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                         help='SGD momentum (default: 0.9)')
@@ -101,7 +102,7 @@ def get_args():
     parser.add_argument('--auto_resume', action='store_true')
     parser.add_argument('--no_auto_resume', action='store_false', dest='auto_resume')
     parser.set_defaults(auto_resume=True)
-    
+
     parser.add_argument('--save_ckpt', action='store_true')
     parser.add_argument('--no_save_ckpt', action='store_false', dest='save_ckpt')
     parser.set_defaults(save_ckpt=True)
@@ -129,13 +130,14 @@ def get_args():
                         help='url used to set up distributed training')
     parser.add_argument('--stage', default='stage2', type=str)
     # parser.add_argument('--codebook_path', default="/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_offset/checkpoint-519.pth", type=str)
-    
+
     ds_init = None
     return parser.parse_args(), ds_init
 
+
 def main(args, ds_init):
     utils.init_distributed_mode(args)
-    args.distributed = False # WE not use the distributed training
+    args.distributed = False  # WE not use the distributed training
     print(args)
 
     device = torch.device(args.device)
@@ -153,7 +155,7 @@ def main(args, ds_init):
     else:
         dataset_val = build_upsampling_dataset('val', args=args)
     # if args.test:
-    dataset_test = build_upsampling_dataset('test', args=args)
+    dataset_test = build_upsampling_dataset('PU1K', args=args)  # 'test'
 
     if args.distributed:
         num_tasks = utils.get_world_size()
@@ -251,7 +253,8 @@ def main(args, ds_init):
     # num_layers = model_without_ddp.get_num_layers()
     num_layers = 12
     if args.layer_decay < 1.0:
-        assigner = LayerDecayValueAssigner(list(args.layer_decay ** (num_layers + 1 - i) for i in range(num_layers + 2)))
+        assigner = LayerDecayValueAssigner(
+            list(args.layer_decay ** (num_layers + 1 - i) for i in range(num_layers + 2)))
     else:
         assigner = None
 
@@ -267,9 +270,9 @@ def main(args, ds_init):
 
     optimizer = create_optimizer(
         args, model_without_ddp, skip_list=skip_weight_decay_list,
-        get_num_layer=assigner.get_layer_id if assigner is not None else None, 
+        get_num_layer=assigner.get_layer_id if assigner is not None else None,
         get_layer_scale=assigner.get_scale if assigner is not None else None,
-        )
+    )
     loss_scaler = NativeScaler()
 
     print("Use step level LR scheduler!")
@@ -294,10 +297,12 @@ def main(args, ds_init):
     start_time = time.time()
     best_cd = np.inf
     best_hd = np.inf
+    best_cd_epoch = 0
+    best_hd_epoch = 0
     if args.eval:
         validate(0, args.output_dir, data_loader_val, model, device, stage=args.stage)
     if args.test:
-        test_stats = test(0, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
+        _, _, _, _, _ = test(0, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
     else:
         for epoch in range(args.start_epoch, args.epochs):
             if args.distributed:
@@ -308,7 +313,8 @@ def main(args, ds_init):
                 device, epoch, loss_scaler, args.clip_grad, model_ema,
                 log_writer=log_writer, start_steps=epoch * num_training_steps_per_epoch,
                 lr_schedule_values=lr_schedule_values, wd_schedule_values=wd_schedule_values,
-                num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq, stage=args.stage
+                num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq,
+                stage=args.stage
             )
             # print(train_stats)
 
@@ -319,7 +325,10 @@ def main(args, ds_init):
                         loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
             if data_loader_test is not None and (epoch % args.validation_freq == 0 or epoch + 1 == args.epochs):
                 # test_stats = test(epoch, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
-                test_stats = test(epoch, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
+                test_stats, best_cd, best_hd, best_cd_epoch, best_hd_epoch = test(epoch, args.output_dir,
+                                                                                  data_loader_test, model, device,
+                                                                                  best_cd, best_hd, best_cd_epoch,
+                                                                                  best_hd_epoch, stage=args.stage)
 
                 # validate(epoch, args.output_dir, data_loader_val, model, device, stage=args.stage)
 
@@ -331,6 +340,15 @@ def main(args, ds_init):
                 log_stats = {'epoch': epoch,
                              **{f'train_{k}': v for k, v in train_stats.items()},
                              'n_parameters': n_parameters}
+
+            if best_cd_epoch == epoch:
+                utils.save_best_cd_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
+            if best_hd_epoch == epoch:
+                utils.save_best_hd_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
 
             if args.output_dir and utils.is_main_process():
                 if log_writer is not None:

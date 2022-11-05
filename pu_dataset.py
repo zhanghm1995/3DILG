@@ -216,14 +216,14 @@ class PUNET_Dataset(data.Dataset):
 
 
 class PUGAN_Dataset(data.Dataset):
-    def __init__(self, h5_file_path='../PUGAN_poisson_256_poisson_1024.h5', 
+    def __init__(self, h5_file_path='../PUGAN_poisson_256_poisson_1024.h5',
                  split='./train.txt',
                  isTrain=True,
-                 npoint=256, 
-                 use_random=True, 
-                 use_norm=True, 
+                 npoint=256,
+                 use_random=True,
+                 use_norm=True,
                  use_aug=True):
-        
+
         super().__init__()
 
         self.isTrain = isTrain
@@ -264,7 +264,7 @@ class PUGAN_Dataset(data.Dataset):
 
     def __getitem__(self, index):
         input_data = self.input[index]
-        gt_data = self.gt[index] # (1024, 3)
+        gt_data = self.gt[index]  # (1024, 3)
         radius_data = np.array([self.radius[index]])
 
         sample_idx = utils.nonuniform_sampling(self.data_npoint, sample_num=self.npoint)
@@ -281,11 +281,11 @@ class PUGAN_Dataset(data.Dataset):
             input_data, gt_data = utils.shift_point_cloud_and_gt(input_data, gt_data, shift_range=0.1)
             radius_data = radius_data * scale
 
-            # for input aug
-            # if np.random.rand() > 0.5:
-            #    input_data = utils.jitter_perturbation_point_cloud(input_data, sigma=0.025, clip=0.05)
-            # if np.random.rand() > 0.5:
-            #    input_data = utils.rotate_perturbation_point_cloud(input_data, angle_sigma=0.03, angle_clip=0.09)
+            #for input aug
+            if np.random.rand() > 0.5:
+               input_data = utils.jitter_perturbation_point_cloud(input_data, sigma=0.025, clip=0.05)
+            if np.random.rand() > 0.5:
+               input_data = utils.rotate_perturbation_point_cloud(input_data, angle_sigma=0.03, angle_clip=0.09)
         else:
             raise NotImplementedError
         return torch.FloatTensor(input_data), torch.FloatTensor(gt_data), torch.FloatTensor(radius_data)
@@ -322,3 +322,36 @@ class xyz_Dataset_Whole(data.Dataset):
         normalized_points_GT = (points - centroid) / furthest_dist
 
         return points, normalized_points_GT, normalized_points_LR, furthest_dist, centroid, name
+
+class xyz_Pair_Dataset(data.Dataset):
+    def __init__(self, lr_dir, gt_dir, n_input=2048):
+        super().__init__()
+        self.raw_input_points = 8192
+        self.n_input = n_input
+
+        file_list = os.listdir(lr_dir)
+        self.names = [x[:-4] for x in file_list]
+        self.lr_sample_path = [os.path.join(lr_dir, x) for x in file_list]
+        self.gt_sample_path = [os.path.join(gt_dir, x) for x in file_list]
+    def __len__(self):
+        return len(self.names)
+
+    def __getitem__(self, index):
+        name = self.names[index]
+        # random_index = np.random.choice(np.linspace(0, self.raw_input_points, self.raw_input_points, endpoint=False),
+        #                                 self.n_input).astype(np.int)
+        gt_points = np.loadtxt(self.gt_sample_path[index])
+
+        centroid = np.mean(gt_points[:, 0:3], axis=0)
+        dist = np.linalg.norm(gt_points[:, 0:3] - centroid, axis=1)
+        furthest_dist = np.max(dist)
+        # print('###########', furthest_dist, furthest_dist.shape)
+        # radius = furthest_dist[:, 0]
+        # radius = furthest_dist
+
+        lr_point = np.loadtxt(self.lr_sample_path[index])
+
+        normalized_points_LR = (lr_point - centroid) / furthest_dist
+        normalized_points_GT = (gt_points - centroid) / furthest_dist
+
+        return gt_points, normalized_points_GT, normalized_points_LR, furthest_dist, centroid, name

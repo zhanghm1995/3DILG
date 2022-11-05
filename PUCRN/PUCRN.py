@@ -6,6 +6,39 @@ from torch import einsum
 from pointnet2_ops.pointnet2_utils import grouping_operation
 
 
+class ori_CRNet(torch.nn.Module):
+    """
+    Point Cloud Upsampling via Cascaded Refinement Network
+
+    Input:
+        points: Input points, (B, 3, N_input)
+    Output:
+        up_point: upsampled results, (B, 3, up_ratio * N_input)
+    """
+
+    def __init__(self, up_ratio):
+        super(ori_CRNet, self).__init__()
+        step_up_rate = int(np.sqrt(up_ratio))
+        self.upsampling_stage_1 = SubNetwork(up_ratio=step_up_rate)
+        self.upsampling_stage_2 = SubNetwork(up_ratio=step_up_rate)
+        self.refinement_stage = SubNetwork(up_ratio=1)
+
+    def forward(self, point_cloud, gt=None):
+        point_cloud = point_cloud.float().contiguous()
+        p1_pred = self.upsampling_stage_1(point_cloud)
+        p2_pred = self.upsampling_stage_2(p1_pred)
+        p3_pred = self.refinement_stage(p2_pred)
+
+        p3_pred = p3_pred.permute(0, 2, 1).contiguous()
+        p2_pred = p2_pred.permute(0, 2, 1).contiguous()
+        p1_pred = p1_pred.permute(0, 2, 1).contiguous()
+
+        if self.training:
+            return [p1_pred, p2_pred, p3_pred], gt
+        else:
+            return p3_pred
+
+
 class CRNet(torch.nn.Module):
     """
     Point Cloud Upsampling via Cascaded Refinement Network
