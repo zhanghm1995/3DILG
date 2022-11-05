@@ -659,7 +659,7 @@ class Encoder(nn.Module):
         self.ratio = N / M
         self.k = num_neighbors
 
-    def forward(self, pc):
+    def forward(self, pc, fps_sample=True):
         # pc: B x N x D
         B, N, D = pc.shape
         assert N == self.M
@@ -671,7 +671,16 @@ class Encoder(nn.Module):
 
         pos = flattened
 
-        idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
+        if fps_sample:
+            idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
+        else:
+            num_needed = int(N * self.ratio)
+            idx = pos.new_zeros((B, num_needed), dtype=torch.long)
+            for i in range(B):
+                count = i * N
+                m_idx = torch.randperm(N, device=pc.device)[:num_needed]
+                idx[i] = count + m_idx
+            idx = idx.view(-1)
 
         row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
         edge_index = torch.stack([col, row], dim=0)
@@ -836,7 +845,7 @@ class PUAutoencoder(nn.Module):
     def encode(self, x, bins=256):
         B, _, _ = x.shape
 
-        z_e_x, centers = self.encoder(x)  # B x T x C, B x T x 3
+        z_e_x, centers = self.encoder(x, fps_sample=False)  # B x T x C, B x T x 3
 
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 

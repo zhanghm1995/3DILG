@@ -16,6 +16,7 @@ DATASET="data/train/pu1k_poisson_256_poisson_1024_pc_2500_patch50_addpugan.h5"
 
 OUTPUT="output/vqpc_s1_full_train_data_512_GT"
 OUTPUT="output/vqpc_s1_PU1K_train_data"
+OUTPUT="output/vqpc_s1_PU1K_train_random_sample"
 
 set -x
 torchrun --nproc_per_node=1 --master_port=$MASTER_PORT run_vqpc.py \
