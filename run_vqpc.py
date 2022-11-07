@@ -63,7 +63,7 @@ def get_args():
                         help='Optimizer Epsilon (default: 1e-8)')
     parser.add_argument('--opt_betas', default=None, type=float, nargs='+', metavar='BETA',
                         help='Optimizer Betas (default: None, use opt default)')
-    parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',  #
+    parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',
                         help='Clip gradient norm (default: None, no clipping)')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                         help='SGD momentum (default: 0.9)')
@@ -130,7 +130,9 @@ def get_args():
                         help='url used to set up distributed training')
     parser.add_argument('--stage', default='stage2', type=str)
     # parser.add_argument('--codebook_path', default="/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_256_1024_1024_offset/checkpoint-519.pth", type=str)
-
+    parser.add_argument('--num_test_GT_points', type=int, default=8192,
+                        help='number of points in the test set')
+    parser.add_argument('--test_set_size', default='PU1K_input_2048', type=str)
     ds_init = None
     return parser.parse_args(), ds_init
 
@@ -155,7 +157,7 @@ def main(args, ds_init):
     else:
         dataset_val = build_upsampling_dataset('val', args=args)
     # if args.test:
-    dataset_test = build_upsampling_dataset('PU1K', args=args)  # 'test'
+    dataset_test = build_upsampling_dataset(args.test_set_size, args=args)  # 'test'
 
     if args.distributed:
         num_tasks = utils.get_world_size()
@@ -302,7 +304,7 @@ def main(args, ds_init):
     if args.eval:
         validate(0, args.output_dir, data_loader_val, model, device, stage=args.stage)
     if args.test:
-        _, _, _, _, _ = test(0, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage)
+        _, _, _, _, _ = test(0, args.output_dir, data_loader_test, model, device, best_cd, best_hd, stage=args.stage, num_GT_points=args.num_test_GT_points)
     else:
         for epoch in range(args.start_epoch, args.epochs):
             if args.distributed:
@@ -328,7 +330,7 @@ def main(args, ds_init):
                 test_stats, best_cd, best_hd, best_cd_epoch, best_hd_epoch = test(epoch, args.output_dir,
                                                                                   data_loader_test, model, device,
                                                                                   best_cd, best_hd, best_cd_epoch,
-                                                                                  best_hd_epoch, stage=args.stage)
+                                                                                  best_hd_epoch, stage=args.stage, num_GT_points=args.num_test_GT_points)
 
                 # validate(epoch, args.output_dir, data_loader_val, model, device, stage=args.stage)
 

@@ -98,6 +98,7 @@ def train_one_epoch(model: torch.nn.Module,
     else:
         optimizer.zero_grad()
 
+
     for data_iter_step, (input_data, gt_data, radius_data) in enumerate(
             metric_logger.log_every(data_loader, print_freq, header)):
         step = data_iter_step // update_freq
@@ -282,15 +283,15 @@ def validate(epoch, log_dir, data_loader, model, device, visualize=True, stage='
 
 @torch.no_grad()
 def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_epoch=0, best_hd_epoch=0,
-         stage='stage1'):
+         stage='stage1', num_GT_points=8192):
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
-    num_GT_points = 8192
     model.eval()
     cd_list = []
     hd_list = []
     output_dir = osp.join(log_dir, "test_vis", f"epoch_{epoch:03d}")
-    os.makedirs(output_dir, exist_ok=True)
+    if epoch % 5 == 0:
+        os.makedirs(output_dir, exist_ok=True)
     for batch in metric_logger.log_every(data_loader, 200, header):
         points, normalized_points_GT, normalized_points_LR, furthest_dist, centroid, name = batch
 
@@ -315,7 +316,7 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_e
 
             batch_size = points.shape[0]
             radius = repeat(radius, 'r -> r w h', w=1, h=1).contiguous()
-            pred = pred * radius + centroid.unsqueeze(2).repeat(1, 1, 8192)  # torch.Size([4, 3, 8192])
+            pred = pred * radius + centroid.unsqueeze(2).repeat(1, 1, num_GT_points)  # torch.Size([4, 3, 8192])
             pred = pred.permute(0, 2, 1)
             pred = pred.data.cpu().numpy()
             if epoch % 5 == 0:

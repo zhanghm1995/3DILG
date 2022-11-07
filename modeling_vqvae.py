@@ -573,7 +573,7 @@ class PUDecoder(nn.Module):
 
         self.up_ratio = up_ratio
 
-        self.PUCRN = CRNet(up_ratio=4)  # self.CRNet_upsample
+        self.PUCRN = CRNet(up_ratio=4)  # self.CRNet_upsample 16 times
 
     def forward(self, latents, centers):
         '''
@@ -586,12 +586,12 @@ class PUDecoder(nn.Module):
         # centers: B x T x 3
         embeddings = embed(centers, self.basis)
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
-        latents = self.transformer(latents, embeddings)  # (B, M, 256)
+        latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
         if self.training:
-            [p1_pred, p2_pred, p3_pred], gt = self.PUCRN(latents, centers)
+            [p1_pred, p2_pred, p3_pred], gt = self.PUCRN(latents, centers)  # TODO: check the latents
             return p1_pred, p2_pred, p3_pred
         else:
-            p3_pred = self.PUCRN(latents, centers)  # self.CRNet_upsample
+            p3_pred = self.PUCRN(latents, centers)  # self.CRNet_upsample  # TODO: check the latents
             return p3_pred
 
 
@@ -677,7 +677,8 @@ class Encoder(nn.Module):
         if fps_sample:
             idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
         else:
-            num_needed = int(N * self.ratio)
+            # if down_sample == 4:
+            num_needed = int(N * self.ratio) # 16 times  * self.ratio
             idx = pos.new_zeros((B, num_needed), dtype=torch.long)
             for i in range(B):
                 count = i * N
@@ -784,7 +785,7 @@ class Stage2Encoder(nn.Module):
 
             pos = flattened
             if pointnet:
-                row, col = knn(pos, pos, self.k, batch, batch) # // 4
+                row, col = knn(pos, pos, self.k, batch, batch)  # // 4
                 edge_index = torch.stack([col, row], dim=0)
                 x = self.conv(pos, pos, edge_index, self.basis)
             else:
@@ -1112,7 +1113,7 @@ class VQPC_stage2(nn.Module):
         if stage == 'stage1':
             num_points = self.M
         elif stage == 'stage2':
-            num_points = self.N
+            num_points = self.N  # 256
         top_k_neareast_idx = pointnet2_utils.knn_point(num_points, seed_xyz,
                                                        points)  # (batch_size, npoint1, k)
         for i in range(top_k_neareast_idx.size()[1]):
@@ -1210,7 +1211,7 @@ def vqvae_512_1024_2048(pretrained=False, **kwargs):
 def vqpc_256_1024_1024(pretrained=False, **kwargs):
     model = PUAutoencoder(
         N=256,
-        K=1024,
+        K=1024, #try 2048, 4096
         M=1024,
         **kwargs)
     model.default_cfg = _cfg()

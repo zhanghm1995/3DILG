@@ -326,7 +326,7 @@ class xyz_Dataset_Whole(data.Dataset):
 class xyz_Pair_Dataset(data.Dataset):
     def __init__(self, lr_dir, gt_dir, n_input=2048):
         super().__init__()
-        self.raw_input_points = 8192
+        self.raw_input_points = n_input * 4
         self.n_input = n_input
 
         file_list = os.listdir(lr_dir)

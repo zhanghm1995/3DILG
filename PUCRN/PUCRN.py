@@ -38,7 +38,6 @@ class ori_CRNet(torch.nn.Module):
         else:
             return p3_pred
 
-
 class CRNet(torch.nn.Module):
     """
     Point Cloud Upsampling via Cascaded Refinement Network
@@ -57,7 +56,7 @@ class CRNet(torch.nn.Module):
         self.refinement_stage = SubNetwork(up_ratio=1)
 
     def forward(self, point_cloud, centers, gt=None):
-        point_cloud = point_cloud.float().contiguous()
+        point_cloud = point_cloud.permute(0, 2, 1).float().contiguous()
         p1_pred = self.upsampling_stage_1(point_cloud, centers.permute(0, 2, 1))
         p2_pred = self.upsampling_stage_2(p1_pred)
         p3_pred = self.refinement_stage(p2_pred)
@@ -114,6 +113,7 @@ class SubNetwork1(nn.Module):
         self.regressor = MLP_CONV(in_channel=128, layer_dims=[64, 3])
 
     def forward(self, points, centers):
+        # print('==================',points.size(), centers.size()) #torch.Size([64, 64, 256]) torch.Size([64, 3, 64])
         point_feat = self.feature_extractor(points, centers)
         up_feat, duplicated_point = self.up_unit(point_feat, centers)
         offest = self.regressor(up_feat)
