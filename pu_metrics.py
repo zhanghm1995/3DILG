@@ -164,8 +164,9 @@ def evaluate_online(pred_dir, gt_dir, device):
 
 
 if __name__ == "__main__":
-    pred_dir = "/mntnfs/cui_data4/yanchengwang/3DILG/visualize/stage1/"
-    gt_dir = "/mntnfs/cui_data4/yanchengwang/PUGAN-pytorch-master/data/test/gt_FPS_8192/"
+    pred_dir = "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_stage1_random_2048_codes_only_fine_loss_resume_e17_cd_100_hd_1_test/test_vis/PU1K_2048_8192/"
+    # gt_dir = "/mntnfs/cui_data4/yanchengwang/PUGAN-pytorch-master/data/test/gt_FPS_8192/" #
+    gt_dir = "/mntnfs/cui_data4/yanchengwang/DATASET/PU1K/test/input_2048/gt_8192/"
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     evaluate_online(pred_dir, gt_dir, device)

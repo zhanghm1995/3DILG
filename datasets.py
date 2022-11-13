@@ -55,6 +55,8 @@ def build_upsampling_dataset(split, args):
         return xyz_Pair_Dataset(lr_dir="/mntnfs/cui_data4/yanchengwang/DATASET/PU1K/test/input_1024/input_1024/", gt_dir="/mntnfs/cui_data4/yanchengwang/DATASET/PU1K/test/input_1024/gt_4096/", n_input=1024)
     elif split == 'PU1K_input_512':
         return xyz_Pair_Dataset(lr_dir="/mntnfs/cui_data4/yanchengwang/DATASET/PU1K/test/input_512/input_512/", gt_dir="/mntnfs/cui_data4/yanchengwang/DATASET/PU1K/test/input_512/gt_2048/", n_input=512)
+    elif split == 'PU1K_input_256':
+        return xyz_Pair_Dataset(lr_dir="/mntnfs/cui_data4/yanchengwang/DATASET/PU1K/test/input_256/input_256/", gt_dir="/mntnfs/cui_data4/yanchengwang/DATASET/PU1K/test/input_256/gt_1024/", n_input=256)
     elif split == 'PUGAN_input_1024':
         return xyz_Pair_Dataset(lr_dir="/mntnfs/cui_data4/yanchengwang/DATASET/CVPR_data/input_1024/", gt_dir="/mntnfs/cui_data4/yanchengwang/DATASET/CVPR_data/gt_FPS_4096/", n_input=1024)
     else:

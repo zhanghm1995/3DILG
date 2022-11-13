@@ -56,7 +56,7 @@ class CRNet(torch.nn.Module):
         self.refinement_stage = SubNetwork(up_ratio=1)
 
     def forward(self, point_cloud, centers, gt=None):
-        point_cloud = point_cloud.permute(0, 2, 1).float().contiguous()
+        point_cloud = point_cloud.permute(0, 2, 1).float().contiguous() #.permute(0, 2, 1) #bug!
         p1_pred = self.upsampling_stage_1(point_cloud, centers.permute(0, 2, 1))
         p2_pred = self.upsampling_stage_2(p1_pred)
         p3_pred = self.refinement_stage(p2_pred)

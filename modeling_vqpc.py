@@ -5,7 +5,7 @@ from functools import partial
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch import Tensor
+
 from torch.nn.utils import weight_norm
 
 from timm.models.registry import register_model
@@ -29,11 +29,6 @@ from dis_pu.layers import (
     DuplicateUp,
     CoordinateRegressor,
     PointShuffle)
-from pointnet2.utils import pointnet2_utils
-from vis_util import save_xyz_file
-from typing import Optional, List
-from PUCRN.PUCRN import CRNet, ori_CRNet
-
 
 def _cfg(url='', **kwargs):
     return {
@@ -155,10 +150,10 @@ class VectorQuantizer2(nn.Module):
         # get quantized latent vectors
         z_q = self.embedding(indices)
 
-        if shape is not None:  # B x C x N
+        if shape is not None:
             z_q = z_q.view(shape)
-            # # reshape back to match original input shape
-            # z_q = z_q.permute(0, 3, 1, 2).contiguous()
+            # reshape back to match original input shape
+            z_q = z_q.permute(0, 3, 1, 2).contiguous()
 
         return z_q
 
@@ -192,7 +187,7 @@ class Mlp(nn.Module):
         x = self.fc1(x)
         x = self.act(x)
         # x = self.drop(x)
-        # commit this for the orignal BERT implement 
+        # commit this for the orignal BERT implement
         x = self.fc2(x)
         x = self.drop(x)
         return x
@@ -342,38 +337,35 @@ class VisionTransformer(nn.Module):
         return x
 
 
-# class Embedding(nn.Module):
-#     '''
-#     Not used
-#     '''
-#     def __init__(self, query_channel=3, latent_channel=192):
-#         super(Embedding, self).__init__()
-#         # self.register_buffer('B', torch.randn((128, 3)) * 2)
-#
-#         self.l1 = weight_norm(nn.Linear(query_channel + latent_channel, 512))
-#         self.l2 = weight_norm(nn.Linear(512, 512))
-#         self.l3 = weight_norm(nn.Linear(512, 512))
-#         self.l4 = weight_norm(nn.Linear(512, 512 - query_channel - latent_channel))
-#         self.l5 = weight_norm(nn.Linear(512, 512))
-#         self.l6 = weight_norm(nn.Linear(512, 512))
-#         self.l7 = weight_norm(nn.Linear(512, 512))
-#         self.l_out = weight_norm(nn.Linear(512, 1))
-#
-#     def forward(self, x, z):
-#         # x: B x N x 3
-#         # z: B x N x 192
-#         input = torch.cat([x, z], dim=2)
-#
-#         h = F.relu(self.l1(input))
-#         h = F.relu(self.l2(h))
-#         h = F.relu(self.l3(h))
-#         h = F.relu(self.l4(h))
-#         h = torch.cat((h, input), axis=2)
-#         h = F.relu(self.l5(h))
-#         h = F.relu(self.l6(h))
-#         h = F.relu(self.l7(h))
-#         h = self.l_out(h)
-#         return h
+class Embedding(nn.Module):
+    def __init__(self, query_channel=3, latent_channel=192):
+        super(Embedding, self).__init__()
+        # self.register_buffer('B', torch.randn((128, 3)) * 2)
+
+        self.l1 = weight_norm(nn.Linear(query_channel + latent_channel, 512))
+        self.l2 = weight_norm(nn.Linear(512, 512))
+        self.l3 = weight_norm(nn.Linear(512, 512))
+        self.l4 = weight_norm(nn.Linear(512, 512 - query_channel - latent_channel))
+        self.l5 = weight_norm(nn.Linear(512, 512))
+        self.l6 = weight_norm(nn.Linear(512, 512))
+        self.l7 = weight_norm(nn.Linear(512, 512))
+        self.l_out = weight_norm(nn.Linear(512, 1))
+
+    def forward(self, x, z):
+        # x: B x N x 3
+        # z: B x N x 192
+        input = torch.cat([x, z], dim=2)
+
+        h = F.relu(self.l1(input))
+        h = F.relu(self.l2(h))
+        h = F.relu(self.l3(h))
+        h = F.relu(self.l4(h))
+        h = torch.cat((h, input), axis=2)
+        h = F.relu(self.l5(h))
+        h = F.relu(self.l6(h))
+        h = F.relu(self.l7(h))
+        h = self.l_out(h)
+        return h
 
 
 def embed(input, basis):
@@ -433,54 +425,6 @@ class Embedding(nn.Module):
         return h
 
 
-def _get_activation_fn(activation):
-    """Return an activation function given a string"""
-    if activation == "relu":
-        return F.relu
-    if activation == "gelu":
-        return F.gelu
-    if activation == "glu":
-        return F.glu
-    raise RuntimeError(F"activation should be relu/gelu, not {activation}.")
-
-
-class TransformerSALayer(nn.Module):
-    def __init__(self, embed_dim, nhead=8, dim_mlp=2048, dropout=0.0, activation="gelu"):
-        super().__init__()
-        self.self_attn = nn.MultiheadAttention(embed_dim, nhead, dropout=dropout)
-        # Implementation of Feedforward model - MLP
-        self.linear1 = nn.Linear(embed_dim, dim_mlp)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_mlp, embed_dim)
-
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-
-        self.activation = _get_activation_fn(activation)
-
-    def with_pos_embed(self, tensor, pos: Optional[Tensor]):
-        return tensor if pos is None else tensor + pos
-
-    def forward(self, tgt,
-                tgt_mask: Optional[Tensor] = None,
-                tgt_key_padding_mask: Optional[Tensor] = None,
-                query_pos: Optional[Tensor] = None):
-        # self attention
-        tgt2 = self.norm1(tgt)
-        q = k = self.with_pos_embed(tgt2, query_pos)
-        tgt2 = self.self_attn(q, k, value=tgt2, attn_mask=tgt_mask,
-                              key_padding_mask=tgt_key_padding_mask)[0]
-        tgt = tgt + self.dropout1(tgt2)
-
-        # ffn
-        tgt2 = self.norm2(tgt)
-        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
-        tgt = tgt + self.dropout2(tgt2)
-        return tgt
-
-
 class Decoder(nn.Module):
     def __init__(self, latent_channel=192):
         super().__init__()
@@ -537,7 +481,7 @@ class Decoder(nn.Module):
 
 
 class PUDecoder(nn.Module):
-    def __init__(self, latent_channel=192, up_ratio=4):
+    def __init__(self, latent_channel=192, up_ratio=4, step_ratio=2, point_channels=3):
         super().__init__()
 
         self.fc = Embedding(latent_channel=latent_channel)
@@ -571,28 +515,46 @@ class PUDecoder(nn.Module):
                                              init_values=0.,
                                              )
 
+        # self.out_layer = nn.Linear(256, 18)  # 6 times
         self.up_ratio = up_ratio
+        self.step_ratio = step_ratio
+        self.duplicate_ups = nn.ModuleDict()
+        for l in range(int(log(self.up_ratio, self.step_ratio))):
+            if l != 0:
+                self.duplicate_ups[str(l)] = DuplicateUp(input_channels=128, step_ratio=step_ratio)
+            else:
+                self.duplicate_ups[str(l)] = DuplicateUp(input_channels=256, step_ratio=step_ratio)
 
-        self.PUCRN = CRNet(up_ratio=4)  # self.CRNet_upsample 16 times
+        self.coarse_coordinate_regressor = CoordinateRegressor(128, point_channels)
 
     def forward(self, latents, centers):
-        '''
-        latents: FPS points quantized features
-        centers: FPS points coordinates
-        '''
         # kernel average
         # samples: B x N x 3
         # latents: B x T x 320
         # centers: B x T x 3
+
         embeddings = embed(centers, self.basis)
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
-        latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
-        if self.training:
-            [p1_pred, p2_pred, p3_pred], gt = self.PUCRN(latents, centers)  # TODO: check the latents
-            return p1_pred, p2_pred, p3_pred
-        else:
-            p3_pred = self.PUCRN(latents, centers)  # self.CRNet_upsample  # TODO: check the latents
-            return p3_pred
+        latents = self.transformer(latents, embeddings)  # (B, M, 256)
+
+        # feature expansion ((r+2)N)
+        for l in range(int(log(self.up_ratio, self.step_ratio))):
+            latents = self.duplicate_ups[str(l)](latents)
+
+        offset = self.coarse_coordinate_regressor(latents) # (B,3,r*n) torch.Size([32, 3, 1024])
+
+        offset = rearrange(offset, 'b c (r n) -> b c r n', r=4) # (B, M, r, 3)
+            # rearrange(offset, 'b n (r c) -> b n r c', c=3)
+
+        # offset = self.out_layer(latents)  # (B, M, 12)
+        offset = rearrange(offset, 'b c r n -> b n r c')
+
+        # offset = rearrange(offset, 'b n (r c) -> b n r c', c=3)
+        pred = centers[:, :, None, :] + offset
+        pred = rearrange(pred, 'b n r c -> b (n r) c', c=3)
+        # batchsize = pred.size()[0]
+        # pred = furthest_point_sample(pred, torch.tensor([batchsize, 1024]))
+        return pred
 
 
 class PointConv(torch.nn.Module):
@@ -663,7 +625,7 @@ class Encoder(nn.Module):
         self.ratio = N / M
         self.k = num_neighbors
 
-    def forward(self, pc, fps_sample=False):
+    def forward(self, pc):
         # pc: B x N x D
         B, N, D = pc.shape
         assert N == self.M
@@ -674,17 +636,8 @@ class Encoder(nn.Module):
         batch = torch.repeat_interleave(batch, N)
 
         pos = flattened
-        if fps_sample:
-            idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
-        else:
-            # if down_sample == 4:
-            num_needed = int(N * self.ratio) # 16 times  * self.ratio
-            idx = pos.new_zeros((B, num_needed), dtype=torch.long)
-            for i in range(B):
-                count = i * N
-                m_idx = torch.randperm(N, device=pc.device)[:num_needed]
-                idx[i] = count + m_idx
-            idx = idx.view(-1)
+
+        idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
 
         row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
         edge_index = torch.stack([col, row], dim=0)
@@ -697,126 +650,11 @@ class Encoder(nn.Module):
 
         embeddings = embed(pos, self.basis)
 
-        embeddings = self.embed(torch.cat([pos, embeddings], dim=2))  # 3 + 48 -> 256
-
-        out = self.transformer(x, embeddings)
-
-        return out, pos
-
-
-class Stage2Encoder(nn.Module):
-    def __init__(self, N=256, dim=128, M=2048, num_neighbors=32):
-        super().__init__()
-
-        self.embed = Seq(Lin(48 + 3, dim))  # , nn.GELU(), Lin(128, 128))
-
-        self.embedding_dim = 48
-        e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
-        e = torch.stack([
-            torch.cat([e, torch.zeros(self.embedding_dim // 6),
-                       torch.zeros(self.embedding_dim // 6)]),
-            torch.cat([torch.zeros(self.embedding_dim // 6), e,
-                       torch.zeros(self.embedding_dim // 6)]),
-            torch.cat([torch.zeros(self.embedding_dim // 6),
-                       torch.zeros(self.embedding_dim // 6), e]),
-        ])
-        self.register_buffer('basis', e)  # 3 x 16
-
-        # self.conv = PointConv(local_nn=Seq(weight_norm(Lin(3+self.embedding_dim, dim))))
-        self.conv = PointConv(
-            local_nn=Seq(weight_norm(Lin(3 + self.embedding_dim, 256)), ReLU(True), weight_norm(Lin(256, 256))),
-            global_nn=Seq(weight_norm(Lin(256, 256)), ReLU(True), weight_norm(Lin(256, dim))),
-        )
-
-        self.transformer = VisionTransformer(embed_dim=dim,
-                                             depth=6,
-                                             num_heads=6,
-                                             mlp_ratio=4.,
-                                             qkv_bias=True,
-                                             qk_scale=None,
-                                             drop_rate=0.,
-                                             attn_drop_rate=0.,
-                                             drop_path_rate=0.1,
-                                             norm_layer=partial(nn.LayerNorm, eps=1e-6),
-                                             init_values=0.,
-                                             )
-
-        self.M = M  # 1024
-        self.N = N  # 256
-        self.ratio = N / M  # 0.25
-        self.up_ratio = M / N  # 4
-        self.k = num_neighbors  # smaller 32->8
-        self.step_up_rate = int(np.sqrt(self.up_ratio))
-
-        # self.first_upsample_CRNet = ori_CRNet(self.up_ratio)
-        # ckpt = "./pretrain/model.pth"
-        # self.first_upsample_CRNet.load_state_dict(torch.load(ckpt)['net_state_dict'])
-        # for param in self.first_upsample_CRNet.parameters():
-        #     param.requires_grad = False
-        # self.linear_start = nn.Conv1d(3, dim, 1)
-
-    def forward(self, pc, direct_predict_code=True, load_pretrained_upsampling_net=True, pointnet=True):
-        '''
-        pc: input LR point cloud: 256 points [B, 256, 3]
-        N: num of points in sparse point cloud
-        '''
-        # TODO: upsample first
-        if direct_predict_code:
-            B, N, D = pc.shape
-            assert N == self.N  # 256
-            flattened = rearrange(pc, 'B N D -> (B N) D').contiguous()  # [B*256, 3] flattened sparse pc
-
-            batch = torch.arange(B).to(pc.device)
-            batch = torch.repeat_interleave(batch, N)
-
-            pos = flattened
-            if pointnet:
-                row, col = knn(pos, pos, self.k, batch, batch)  # // 4
-                edge_index = torch.stack([col, row], dim=0)
-                x = self.conv(pos, pos, edge_index, self.basis)
-            else:
-                x = self.linear_start(pc.permute(0, 2, 1))
-
-        else:
-            if load_pretrained_upsampling_net:
-                if self.training:
-                    [p1_pred, p2_pred, p3_pred], gt = self.first_upsample_CRNet(pc.permute(0, 2, 1))
-                else:
-                    p3_pred = self.first_upsample_CRNet(pc.permute(0, 2, 1))
-                coarse_dense_pc = p3_pred  # [B, 1024, 3]
-            else:
-                coarse_dense_pc = self.upsampling_stage_1(pc.permute(0, 2, 1))  # [B, 3, 512]
-                coarse_dense_pc = self.upsampling_stage_2(coarse_dense_pc)  # [B, 3, 1024]
-                coarse_dense_pc = coarse_dense_pc.permute(0, 2, 1)  # [B, 1024, 3]
-
-            B, N, D = coarse_dense_pc.shape
-            assert N == self.M  # 1024
-
-            # flattened = pc.view(B * N, D)
-            flattened = rearrange(coarse_dense_pc, 'B N D -> (B N) D').contiguous()  # [B*1024, 3] flattened dense pc
-
-            batch = torch.arange(B).to(pc.device)
-            batch = torch.repeat_interleave(batch, N)
-
-            pos = flattened  # torch.Size([8192, 3])
-            idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
-
-            row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
-            edge_index = torch.stack([col, row], dim=0)
-
-            x = self.conv(pos, pos[idx], edge_index, self.basis)
-            pos, batch = pos[idx], batch[idx]
-
-        x = x.view(B, -1, x.shape[-1])
-        pos = pos.view(B, -1, 3)
-
-        embeddings = embed(pos, self.basis)
-
         embeddings = self.embed(torch.cat([pos, embeddings], dim=2))
 
         out = self.transformer(x, embeddings)
 
-        return out, pos  # , coarse_dense_pc # [B, 1024, 3]
+        return out, pos
 
 
 class Autoencoder(nn.Module):
@@ -843,6 +681,57 @@ class Autoencoder(nn.Module):
         z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
         # print(z_q_x_st.shape, loss_vq.item(), perplexity.item(), encodings.shape)
         return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
+    
+    def pc_prediction(self, points):
+        ## get patch seed from farthestsampling
+        # points = tf.convert_to_tensor(np.expand_dims(pc,axis=0),dtype=tf.float32)
+        # start= time()
+        # print('------------------patch_num_point:',self.opts.patch_num_point)
+        seed1_num = int(points.size()[1] / self.M)  # self.opts.patch_num_point * self.opts.patch_num_ratio
+
+        ## FPS sampling
+
+        # seed = FurthestPointSampling(points, seed1_num)#.eval()[0] (B, npoint)
+        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed1_num)  # .permute(0, 2, 1).contiguous()
+        seed_xyz = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
+        seed_xyz = seed_xyz.permute(0, 2, 1).contiguous()
+        # seed_list = seed[:seed1_num]
+        # print("farthest distance sampling cost", time() - start)
+        # print("number of patches: %d" % len(seed_list))
+        input_list = []
+        up_point_list = []
+        # print('=====================', self.M, seed_xyz.size(), points.size()) # 1024 torch.Size([1, 8, 3]) torch.Size([1, 8192, 3])
+        top_k_neareast_idx = pointnet2_utils.knn_point(self.M, seed_xyz,
+                                                       points)  # top_k_neareast_idx: (batch_size, npoint1, k) int32 array, indices to input points
+        # print('================', top_k_neareast_idx.size())  # torch.Size([1, 8, 1024])
+        result = torch.empty(1, 1024, 3).cuda()
+        for i in range(top_k_neareast_idx.size()[1]):
+            idx = top_k_neareast_idx[:, i, :]  # torch.Size([1, 1024])
+            patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
+                                                     idx)
+            patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
+
+            # print(patch)
+            up_point = self(patch)
+
+            # up_point = np.squeeze(up_point, axis=0)
+            input_list.append(patch)
+            # print(type(result), type(up_point))
+            result = torch.cat((result, up_point[0]), dim=1)
+            # up_point_list.append(up_point)
+
+        # patches = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
+        #                                            top_k_neareast_idx)  # points: torch.Size([1, 8192, 3])
+        # print('================', patches.size())  # torch.Size([1, 8192, 8])
+        # patches = pointnet2_utils.extract_knn_patch(seed_xyz, points, self.N) #self.opts.patch_num_point
+
+        # for point in tqdm(patches, total=patches):
+        #     up_point = self(point)
+        #     # up_point = np.squeeze(up_point, axis=0)
+        #     input_list.append(point)
+        #     up_point_list.append(up_point)
+
+        return input_list, result
 
     def forward(self, x, points):
         z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)
@@ -868,8 +757,6 @@ class PUAutoencoder(nn.Module):
         self.decoder = PUDecoder(latent_channel=dim)
 
         self.codebook = VectorQuantizer2(K, dim)
-        self.M = M
-        self.N = N
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -883,36 +770,8 @@ class PUAutoencoder(nn.Module):
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 
         z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
+        # print(z_q_x_st.shape, loss_vq.item(), perplexity.item(), encodings.shape)
         return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
-
-    def pc_prediction(self, points):
-        '''
-        result: torch.Size([B, 25600, 3])
-        '''
-        ## get patch seed from farthestsampling
-        seed1_num = 50  # int(points.size()[1] / self.M)
-
-        ## FPS sampling
-        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed1_num)
-        seed_xyz = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
-        seed_xyz = seed_xyz.permute(0, 2, 1).contiguous()
-
-        input_list = []
-        top_k_neareast_idx = pointnet2_utils.knn_point(self.M, seed_xyz,
-                                                       points)  # (batch_size, npoint1, k)
-        for i in range(top_k_neareast_idx.size()[1]):
-            idx = top_k_neareast_idx[:, i, :].contiguous()  # torch.Size([1, 1024])
-            patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
-                                                     idx)
-            patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
-            up_point, _ = self(patch)
-            input_list.append(patch)
-            if i == 0:
-                result = up_point
-            else:
-                result = torch.cat((result, up_point), dim=1)
-
-        return input_list, result
 
     def forward(self, x):
         z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)
@@ -921,286 +780,10 @@ class PUAutoencoder(nn.Module):
 
         z_q_x = z_q_x_st
 
-        if self.training:
-            p1_pred, p2_pred, p3_pred = self.decoder(z_q_x_st, centers)
-            return p1_pred, p2_pred, p3_pred, z_e_x, z_q_x, loss_vq, perplexity
-        else:
-            p3_pred = self.decoder(z_q_x_st, centers)
-            return p3_pred, loss_vq
+        pred = self.decoder(z_q_x_st, centers)
 
+        return pred, z_e_x, z_q_x, loss_vq, perplexity
 
-def calc_mean_std(feat, eps=1e-5):
-    """Calculate mean and std for adaptive_instance_normalization.
-
-    Args:
-        feat (Tensor): 4D tensor. -> changed to 3D
-        eps (float): A small value added to the variance to avoid
-            divide-by-zero. Default: 1e-5.
-    """
-    size = feat.size()
-    assert len(size) == 3, 'The input feature should be 3D tensor.'
-    b, c = size[:2]
-    feat_var = feat.var(dim=2) + eps
-    feat_std = feat_var.sqrt().view(b, c, 1)
-    feat_mean = feat.mean(dim=2).view(b, c, 1)
-    return feat_mean, feat_std
-
-
-def adaptive_instance_normalization(content_feat, style_feat):
-    """Adaptive instance normalization.
-
-    Adjust the reference features to have the similar color and illuminations
-    as those in the degradate features.
-
-    Args:
-        content_feat (Tensor): The reference feature.
-        style_feat (Tensor): The degradate features.
-    """
-    size = content_feat.size()
-    style_mean, style_std = calc_mean_std(style_feat)
-    content_mean, content_std = calc_mean_std(content_feat)
-    normalized_feat = (content_feat - content_mean.expand(size)) / content_std.expand(size)
-    return normalized_feat * style_std.expand(size) + style_mean.expand(size)
-
-
-class VQPC_stage2(nn.Module):
-    '''
-    stage2: randomly sampled point cloud -> upsampled dense point cloud
-    '''
-
-    def __init__(self, N=256, K=1024, dim=256, M=1024, num_neighbors=32, path=None, **kwargs):
-        super().__init__()
-        # self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
-        self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)  # first upsample
-
-        self.decoder = PUDecoder(latent_channel=dim)
-
-        self.codebook = VectorQuantizer2(K, dim)
-
-        self.M = M
-        self.N = N
-
-        # self.n_layers = n_layers
-
-        # self.dim_mlp = self.dim_embd * 2
-
-        # self.position_emb = nn.Parameter(torch.zeros(dim, self.dim_embd))
-        # self.feat_emb = nn.Linear(256, self.dim_embd)
-
-        # # transformer
-        # self.ft_layers = nn.Sequential(
-        #     *[TransformerSALayer(embed_dim=self.dim_embd, nhead=n_head, dim_mlp=self.dim_mlp, dropout=0.0)
-        #       for _ in range(self.n_layers)])
-
-        # logits_predict head
-        self.dim_embd = 256
-        self.idx_pred_layer = nn.Sequential(
-            nn.LayerNorm(self.dim_embd),
-            nn.Linear(self.dim_embd, K, bias=False))
-
-        self.init_from_ckpt(path=path, fix_weights=True)
-
-    def init_from_ckpt(self, path, fix_weights=True):
-        stage1_weights = torch.load(path, map_location="cpu")["model"]
-        # embedding_state_dict = {}
-        decoder_state_dict = {}
-        for k, v in stage1_weights.items():
-            if 'codebook' in k:
-                # embedding_state_dict[k] = v
-                self.codebook.embedding.weight.data = stage1_weights['codebook.embedding.weight']
-            elif 'decoder' in k:
-                k = k.split('decoder.')[-1]
-                # if 'PUCRN' in k:
-                #     k = k.replace('PUCRN', 'CRNet_upsample')
-                decoder_state_dict[k] = v
-
-        # self.codebook.load_state_dict(embedding_state_dict)
-        # self.codebook.embedding.load_state_dict(stage1_weights['embedding.weight'])
-        # self.codebook.embedding.weight.data = stage1_weights['params_ema']['embedding.weight']
-
-        self.decoder.load_state_dict(decoder_state_dict)
-
-        if fix_weights:
-            for param in self.codebook.parameters():
-                param.requires_grad = False
-            for param in self.decoder.parameters():
-                param.requires_grad = False
-        print(f"Load pretrained codebook and decoder from {path}. And fixed their weights")
-
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        return {}
-
-    def Stage2Encode(self, x, bins=256, generate_index='predict'):
-        B, _, _ = x.shape
-
-        fps_feature, centers = self.Stage2Encoder(x)  # B x C x N, B x N x 3
-
-        # # ################# Transformer ###################
-        # # quant_feat, codebook_loss, quant_stats = self.quantize(lq_feat)
-        # pos_emb = self.position_emb.unsqueeze(1).repeat(1, x.shape[0], 1)  # 256,512 -> 256,B,512
-        # # BCHW -> BC(HW) -> (HW)BC
-        # feat_emb = self.feat_emb(z_e_x.permute(2, 0, 1))  # C: 256-> 512
-        # query_emb = feat_emb
-        # # Transformer encoder
-        # for layer in self.ft_layers:
-        #     query_emb = layer(query_emb, query_pos=pos_emb)
-        #
-        # # output logits
-        # logits = self.idx_pred_layer(query_emb)  # (hw)bn
-        if generate_index == 'predict':
-            # z_e_x = rearrange(fps_feature, 'B C N -> (B N) C').contiguous()  # z_e_x: torch.Size([32*256, 256])
-            z_e_x = rearrange(fps_feature, 'B C N -> N B C').contiguous()  # z_e_x: torch.Size([32*256, 256])
-
-            logits = self.idx_pred_layer(z_e_x)  # NBC    logits: torch.Size([32*256, 1024])
-            logits = logits.permute(1, 0, 2)  # (hw)bn -> b(hw)n
-            soft_one_hot = F.softmax(logits, dim=2)
-            # soft_one_hot = F.softmax(logits, dim=1)
-            if self.training:
-                quant_feat = torch.einsum('btn,nc->btc', [soft_one_hot, self.codebook.embedding.weight])
-                # b(hw)c -> bc(hw) -> bchw
-                quant_feat = quant_feat.permute(0, 2, 1).view(fps_feature.shape)
-            else:
-                _, top_idx = torch.topk(soft_one_hot, 1, dim=2)
-                quant_feat = self.codebook.get_codebook_entry(top_idx,
-                                                              shape=fps_feature.shape)  # [x.shape[0], 16, 16, 256]
-
-            quant_feat = adaptive_instance_normalization(quant_feat, fps_feature)
-
-        elif generate_index == 'neareatneighbor':
-            # z = rearrange(z, 'b c N-> b N c').contiguous()
-            z_flattened = rearrange(fps_feature, 'B C N -> (B N) C').contiguous()
-            # z_flattened = rearrange(fps_feature, 'B N C -> (B N) C').contiguous()
-            # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
-
-            d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
-                torch.sum(self.codebook.embedding.weight ** 2, dim=1) - 2 * \
-                torch.einsum('bd,dn->bn', z_flattened, rearrange(self.codebook.embedding.weight, 'n d -> d n'))
-
-            min_encoding_indices = torch.argmin(d, dim=1)
-            quant_feat = self.codebook.embedding(min_encoding_indices).view(fps_feature.shape)
-            quant_feat = fps_feature + (quant_feat - fps_feature).detach()
-
-        centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
-
-        # z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
-        return quant_feat, centers_quantized  # , loss_vq, perplexity, encodings
-
-    def pc_prediction(self, points, stage='stage1'):
-        ## get patch seed from farthestsampling
-        seed1_num = 50  # int(points.size()[1] / self.M)
-
-        ## FPS sampling
-        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed1_num)
-        seed_xyz = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
-        seed_xyz = seed_xyz.permute(0, 2, 1).contiguous()
-
-        input_list = []
-        if stage == 'stage1':
-            num_points = self.M
-        elif stage == 'stage2':
-            num_points = self.N  # 256
-        top_k_neareast_idx = pointnet2_utils.knn_point(num_points, seed_xyz,
-                                                       points)  # (batch_size, npoint1, k)
-        for i in range(top_k_neareast_idx.size()[1]):
-            idx = top_k_neareast_idx[:, i, :].contiguous()  # torch.Size([1, 1024])
-            patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
-                                                     idx)
-            patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
-            up_point = self(patch)
-
-            input_list.append(patch)
-            if i == 0:
-                result = up_point
-            else:
-                result = torch.cat((result, up_point), dim=1)
-        return input_list, result
-
-    def forward(self, x):
-        quant_feat, centers_quantized = self.Stage2Encode(x)
-
-        centers = centers_quantized.float() / 255.0 * 2 - 1
-
-        if self.training:
-            p1_pred, p2_pred, p3_pred = self.decoder(quant_feat, centers)
-            return p1_pred, p2_pred, p3_pred  # coarse_dense_pc.contiguous()
-        else:
-            p3_pred = self.decoder(quant_feat, centers)
-            return p3_pred
-
-
-class VQPC_stage2_without_VQ(nn.Module):
-    '''
-    stage2: randomly sampled point cloud -> upsampled dense point cloud
-    '''
-
-    def __init__(self, N=256, dim=256, M=1024, num_neighbors=32, path=None, **kwargs):
-        super().__init__()
-        # self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
-        self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)  # first upsample
-
-        self.decoder = PUDecoder(latent_channel=dim)
-
-        self.M = M
-        self.N = N
-
-        # self.init_from_ckpt(path=path, fix_weights=True)
-
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        return {}
-
-    def Stage2Encode(self, x, bins=256):
-        B, _, _ = x.shape
-
-        random_sample_feature, centers = self.Stage2Encoder(x)  # B x C x N, B x N x 3
-
-        centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
-
-        # z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
-        return random_sample_feature, centers_quantized
-
-    def pc_prediction(self, points, stage='stage1'):
-        ## get patch seed from farthestsampling
-        seed1_num = 50  # int(points.size()[1] / self.M)
-
-        ## FPS sampling
-        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed1_num)
-        seed_xyz = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
-        seed_xyz = seed_xyz.permute(0, 2, 1).contiguous()
-
-        input_list = []
-        if stage == 'stage1':
-            num_points = self.M
-        elif stage == 'stage2':
-            num_points = self.N  # 256
-        top_k_neareast_idx = pointnet2_utils.knn_point(num_points, seed_xyz,
-                                                       points)  # (batch_size, npoint1, k)
-        for i in range(top_k_neareast_idx.size()[1]):
-            idx = top_k_neareast_idx[:, i, :].contiguous()  # torch.Size([1, 1024])
-            patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
-                                                     idx)
-            patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
-            up_point = self(patch)
-
-            input_list.append(patch)
-            if i == 0:
-                result = up_point
-            else:
-                result = torch.cat((result, up_point), dim=1)
-        return input_list, result
-
-    def forward(self, x):
-        random_feat, centers_quantized = self.Stage2Encode(x)
-
-        centers = centers_quantized.float() / 255.0 * 2 - 1
-
-        if self.training:
-            p1_pred, p2_pred, p3_pred = self.decoder(random_feat, centers)
-            return p1_pred, p2_pred, p3_pred  # coarse_dense_pc.contiguous()
-        else:
-            p3_pred = self.decoder(random_feat, centers)
-            return p3_pred
 
 @register_model
 def vqvae_64_1024_2048(pretrained=False, **kwargs):
@@ -1252,7 +835,7 @@ def vqvae_256_1024_2048(pretrained=False, **kwargs):
 
 @register_model
 def vqvae_512_1024_2048(pretrained=False, **kwargs):
-    model = PUAutoencoder(
+    model = Autoencoder(
         N=512,
         K=1024,
         M=2048,
@@ -1270,60 +853,8 @@ def vqvae_512_1024_2048(pretrained=False, **kwargs):
 def vqpc_256_1024_1024(pretrained=False, **kwargs):
     model = PUAutoencoder(
         N=256,
-        K=1024, #try 2048, 4096
+        K=1024,
         M=1024,
-        **kwargs)
-    model.default_cfg = _cfg()
-    # pretrained_path = "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_s1_4x_PUGAN_permute_channel/best_cd.pth"
-    if pretrained:
-        checkpoint = torch.load(
-            kwargs["init_ckpt"], map_location="cpu"
-        )
-        # checkpoint = torch.load(
-        #     pretrained_path, map_location="cpu"
-        # )
-        model.load_state_dict(checkpoint["model"])
-        # print('==========load pretrained stage1 model from vqpc_s1_4x_PUGAN_permute_channel!============')
-    return model
-
-@register_model
-def vqpc_256_2048_1024(pretrained=False, **kwargs):
-    model = PUAutoencoder(
-        N=256,
-        K=2048, #try 2048, 4096
-        M=1024,
-        **kwargs)
-    model.default_cfg = _cfg()
-    if pretrained:
-        checkpoint = torch.load(
-            kwargs["init_ckpt"], map_location="cpu"
-        )
-        model.load_state_dict(checkpoint["model"])
-    return model
-
-@register_model
-def vqpc_stage2(pretrained=False, **kwargs):
-    model = VQPC_stage2(
-        N=256,
-        K=4096,  # 1024, 2048, 4098
-        M=1024,
-        path="/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_s1_4x_PU1K_codebook_4096/best_cd.pth",
-        # TODO: move it to bash
-        **kwargs)
-    model.default_cfg = _cfg()
-    if pretrained:
-        checkpoint = torch.load(
-            kwargs["init_ckpt"], map_location="cpu"
-        )
-        model.load_state_dict(checkpoint["model"])
-    return model
-
-@register_model
-def vqpc_stage2_without_VQ(pretrained=False, **kwargs):
-    model = VQPC_stage2_without_VQ(
-        N=256,
-        M=1024,
-        # TODO: move it to bash
         **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
