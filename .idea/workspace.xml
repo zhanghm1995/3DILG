@@ -91,12 +91,17 @@
         </entry>
       </map>
     </option>
+    <option name="oldMeFiltersMigrated" value="true" />
   </component>
   <component name="WindowStateProjectService">
     <state x="361" y="119" key="#Deployment" timestamp="1666101582512">
       <screen x="0" y="0" width="1536" height="920" />
     </state>
     <state x="361" y="119" key="#Deployment/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666101582512" />
+    <state x="2419" y="108" key="#com.intellij.refactoring.safeDelete.UnsafeUsagesDialog" timestamp="1668755640652">
+      <screen x="1920" y="-99" width="1536" height="920" />
+    </state>
+    <state x="2419" y="108" key="#com.intellij.refactoring.safeDelete.UnsafeUsagesDialog/1920.-99.1536.920/0.0.1536.920@1920.-99.1536.920" timestamp="1668755640652" />
     <state x="549" y="215" key="FileChooserDialogImpl" timestamp="1666101531854">
       <screen x="0" y="0" width="1536" height="920" />
     </state>
@@ -117,10 +122,11 @@
       <screen x="1920" y="-99" width="1536" height="920" />
     </state>
     <state x="1920" y="-99" width="1359" height="906" key="dock-window-2/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666353550286" />
-    <state x="468" y="192" width="949" height="726" key="find.popup" timestamp="1666281968826">
-      <screen x="0" y="0" width="1536" height="920" />
+    <state x="2388" y="93" width="949" height="726" key="find.popup" timestamp="1668756941366">
+      <screen x="1920" y="-99" width="1536" height="920" />
     </state>
     <state x="468" y="192" width="949" height="726" key="find.popup/1920.-99.1536.920/0.0.1536.920@0.0.1536.920" timestamp="1666281968826" />
+    <state x="2388" y="93" width="949" height="726" key="find.popup/1920.-99.1536.920/0.0.1536.920@1920.-99.1536.920" timestamp="1668756941366" />
     <state x="715" y="311" width="353" height="586" key="ftp.server.browser" timestamp="1666101581440">
       <screen x="0" y="0" width="1536" height="920" />
     </state>
