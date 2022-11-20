@@ -50,7 +50,9 @@ def build_upsampling_dataset(split, args):
     elif split == 'PUGAN_input_2048':
         return xyz_Dataset_Whole(data_dir='./data/test/gt_FPS_8192/', n_input=2048)
     elif split == 'PU1K_input_2048':
-        return xyz_Pair_Dataset(lr_dir='./data/PU1K/test/input_2048/input_2048/', gt_dir='./data/PU1K/test/input_2048/gt_8192/', n_input=2048)
+        return xyz_Pair_Dataset(lr_dir='./data/PU1K/test/input_2048/input_2048/', 
+                                gt_dir='./data/PU1K/test/input_2048/gt_8192/', 
+                                n_input=2048)
     elif split == 'PU1K_input_1024':
         return xyz_Pair_Dataset(lr_dir="./data/PU1K/test/input_1024/input_1024/", gt_dir="./data/PU1K/test/input_1024/gt_4096/", n_input=1024)
     elif split == 'PU1K_input_512':

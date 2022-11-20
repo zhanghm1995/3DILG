@@ -870,6 +870,7 @@ class PUAutoencoder(nn.Module):
         self.codebook = VectorQuantizer2(K, dim)
         self.M = M
         self.N = N
+        self.patch_num_ratio = 3
 
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -890,28 +891,42 @@ class PUAutoencoder(nn.Module):
         result: torch.Size([B, 25600, 3])
         '''
         ## get patch seed from farthestsampling
-        seed1_num = 50  # int(points.size()[1] / self.M)
+        num_points = points.shape[1]
+        seed_num = int(num_points / self.M * self.patch_num_ratio)
 
         ## FPS sampling
-        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed1_num)
-        seed_xyz = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
+        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed_num)
+        seed_xyz = pointnet2_utils.gather_operation(
+            points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
         seed_xyz = seed_xyz.permute(0, 2, 1).contiguous()
 
         input_list = []
-        top_k_neareast_idx = pointnet2_utils.knn_point(self.M, seed_xyz,
-                                                       points)  # (batch_size, npoint1, k)
+        result_list = []
+
+        top_k_neareast_idx = pointnet2_utils.knn_point(self.M, seed_xyz, points)  # (batch_size, npoint1, k)
         for i in range(top_k_neareast_idx.size()[1]):
             idx = top_k_neareast_idx[:, i, :].contiguous()  # torch.Size([1, 1024])
             patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
                                                      idx)
             patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
-            up_point, _ = self(patch)
-            input_list.append(patch)
-            if i == 0:
-                result = up_point
-            else:
-                result = torch.cat((result, up_point), dim=1)
 
+            ## Normalize
+            centroid = torch.mean(patch, axis=1, keepdims=True)
+            points_mean = patch - centroid # (B, N, 3)
+            furthest_distance = torch.max(
+                torch.sqrt(torch.sum(points_mean ** 2, axis=-1)), dim=1, keepdims=True)[0] # (B, 1)
+            furthest_distance = furthest_distance[..., None] # (B, 1, 1)
+
+            normalized_patch = points_mean / furthest_distance
+
+            up_point, _ = self(normalized_patch) # up_point: (B, N, 3)
+            ## UnNormalize
+            up_point = up_point * furthest_distance + centroid
+
+            input_list.append(patch)
+            result_list.append(up_point)
+
+        result = torch.concat(result_list, dim=1)
         return input_list, result
 
     def forward(self, x):

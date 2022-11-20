@@ -300,6 +300,7 @@ def validate(epoch, log_dir, data_loader, model, device, visualize=True, stage='
 @torch.no_grad()
 def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_epoch=0, best_hd_epoch=0,
          stage='stage1', num_GT_points=8192):
+    from pu_metrics import normalize_point_cloud
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
     model.eval()
@@ -315,7 +316,7 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_e
         normalized_points_GT = normalized_points_GT.float().to(device, non_blocking=True).contiguous()
         normalized_points_LR = normalized_points_LR.float().to(device,
                                                                non_blocking=True).contiguous()  # torch.Size([B, 2048, 3])
-        radius = furthest_dist.float().to(device, non_blocking=True).contiguous()
+        furthest_dist = furthest_dist.float().to(device, non_blocking=True).contiguous()
         centroid = centroid.float().to(device, non_blocking=True).contiguous()
 
         with torch.cuda.amp.autocast():
@@ -325,16 +326,12 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_e
                 input_list, pred_pc = model.pc_prediction(normalized_points_LR, stage='stage2')
             idx = pointnet2_utils.furthest_point_sample(pred_pc, num_GT_points)
             pred = pointnet2_utils.gather_operation(pred_pc.permute(0, 2, 1).contiguous(), idx)
-            # print('==================',pred.permute(0, 2, 1).contiguous().size(), normalized_points_GT.size())
-
-
 
             batch_size = points.shape[0]
-            radius = repeat(radius, 'r -> r w h', w=1, h=1).contiguous()
-            pred = pred * radius + centroid.unsqueeze(2).repeat(1, 1, num_GT_points)  # torch.Size([4, 3, 8192])
+            furthest_dist = repeat(furthest_dist, 'r -> r w h', w=1, h=1).contiguous()
+            pred = pred * furthest_dist + centroid.unsqueeze(2).repeat(1, 1, num_GT_points)  # torch.Size([4, 3, 8192])
             pred = pred.permute(0, 2, 1).contiguous()
 
-            from pu_metrics import normalize_point_cloud
             pred_nomalized = normalize_point_cloud(pred)
             cd, hd_value = compute_cd_hd_distance(pred_nomalized, normalized_points_GT)
             cd_list.append(cd.data.cpu().numpy())
