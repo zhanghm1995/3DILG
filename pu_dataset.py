@@ -290,6 +290,7 @@ class PUGAN_Dataset(data.Dataset):
             raise NotImplementedError
         return torch.FloatTensor(input_data), torch.FloatTensor(gt_data), torch.FloatTensor(radius_data)
 
+
 class xyz_Dataset_Whole(data.Dataset):
     def __init__(self, data_dir='../MC_5k', n_input=2048):
         super().__init__()
@@ -333,6 +334,7 @@ class xyz_Pair_Dataset(data.Dataset):
         self.names = [x[:-4] for x in file_list]
         self.lr_sample_path = [os.path.join(lr_dir, x) for x in file_list]
         self.gt_sample_path = [os.path.join(gt_dir, x) for x in file_list]
+    
     def __len__(self):
         return len(self.names)
 
@@ -340,10 +342,10 @@ class xyz_Pair_Dataset(data.Dataset):
         name = self.names[index]
         # random_index = np.random.choice(np.linspace(0, self.raw_input_points, self.raw_input_points, endpoint=False),
         #                                 self.n_input).astype(np.int)
-        gt_points = np.loadtxt(self.gt_sample_path[index])
+        gt_points = np.loadtxt(self.gt_sample_path[index]).astype(np.float32)
 
-        centroid = np.mean(gt_points[:, 0:3], axis=0)
-        dist = np.linalg.norm(gt_points[:, 0:3] - centroid, axis=1)
+        centroid = np.mean(gt_points[:, :3], axis=0)
+        dist = np.linalg.norm(gt_points[:, :3] - centroid, axis=1)
         furthest_dist = np.max(dist)
         # print('###########', furthest_dist, furthest_dist.shape)
         # radius = furthest_dist[:, 0]
