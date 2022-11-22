@@ -1102,33 +1102,53 @@ class VQPC_stage2(nn.Module):
         return quant_feat, centers_quantized  # , loss_vq, perplexity, encodings
 
     def pc_prediction(self, points, stage='stage1'):
+        '''
+        result: torch.Size([B, 25600, 3])
+        '''
         ## get patch seed from farthestsampling
-        seed1_num = 50  # int(points.size()[1] / self.M)
+        lr_num_points = points.shape[1]
+        # gt_num_points = lr_num_points * 4
+        # seed_num = int(gt_num_points / self.M * self.patch_num_ratio) #8192/1024*3
+        seed_num = int((lr_num_points / self.N)*2)
 
         ## FPS sampling
-        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed1_num)
-        seed_xyz = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
+        further_point_idx = pointnet2_utils.furthest_point_sample(points, seed_num)
+        seed_xyz = pointnet2_utils.gather_operation(
+            points.permute(0, 2, 1).contiguous(), further_point_idx)  # B,C,N
         seed_xyz = seed_xyz.permute(0, 2, 1).contiguous()
 
         input_list = []
+        result_list = []
+
         if stage == 'stage1':
             num_points = self.M
         elif stage == 'stage2':
             num_points = self.N  # 256
-        top_k_neareast_idx = pointnet2_utils.knn_point(num_points, seed_xyz,
-                                                       points)  # (batch_size, npoint1, k)
+
+        top_k_neareast_idx = pointnet2_utils.knn_point(num_points, seed_xyz, points)  # (batch_size, npoint1, k)
         for i in range(top_k_neareast_idx.size()[1]):
             idx = top_k_neareast_idx[:, i, :].contiguous()  # torch.Size([1, 1024])
             patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
-                                                     idx)
+                                                    idx)
             patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
-            up_point = self(patch)
+
+            ## Normalize
+            centroid = torch.mean(patch, axis=1, keepdims=True)
+            points_mean = patch - centroid  # (B, N, 3)
+            furthest_distance = torch.max(
+                torch.sqrt(torch.sum(points_mean ** 2, axis=-1)), dim=1, keepdims=True)[0]  # (B, 1)
+            furthest_distance = furthest_distance[..., None]  # (B, 1, 1)
+
+            normalized_patch = points_mean / furthest_distance
+
+            up_point = self(normalized_patch)  # up_point: (B, N, 3)
+            ## UnNormalize
+            up_point = up_point * furthest_distance + centroid
 
             input_list.append(patch)
-            if i == 0:
-                result = up_point
-            else:
-                result = torch.cat((result, up_point), dim=1)
+            result_list.append(up_point)
+
+        result = torch.concat(result_list, dim=1)
         return input_list, result
 
     def forward(self, x):
@@ -1320,9 +1340,9 @@ def vqpc_256_2048_1024(pretrained=False, **kwargs):
 def vqpc_stage2(pretrained=False, **kwargs):
     model = VQPC_stage2(
         N=256,
-        K=4096,  # 1024, 2048, 4098
+        K=2048,  # 1024, 2048, 4098
         M=1024,
-        path="/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_s1_4x_PU1K_codebook_4096/best_cd.pth",
+        path="/home/zhanghm/Research/PU/3DILG/output/vqpc_stage1_random_2048_codes_only_fine_loss_normalize_patch/best_cd.pth",
         # TODO: move it to bash
         **kwargs)
     model.default_cfg = _cfg()
