@@ -32,7 +32,7 @@ from math import log
 from pointnet2.utils import pointnet2_utils
 from vis_util import save_xyz_file
 from typing import Optional, List
-from PUCRN.PUCRN import CRNet, ori_CRNet
+from PUCRN.PUCRN_new import CRNet
 
 
 def _cfg(url='', **kwargs):
@@ -588,11 +588,11 @@ class PUDecoder(nn.Module):
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
         latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
         if self.training:
-            [p1_pred, p2_pred, p3_pred], gt = self.PUCRN(latents, centers)  # TODO: check the latents
-            return p1_pred, p2_pred, p3_pred
+            pred, gt = self.PUCRN(latents, centers)  # TODO:  [p1_pred, p2_pred, p3_pred]
+            return pred
         else:
-            p3_pred = self.PUCRN(latents, centers)  # self.CRNet_upsample  # TODO: check the latents
-            return p3_pred
+            pred = self.PUCRN(latents, centers)  # self.CRNet_upsample  # TODO: check the latents
+            return pred
 
 
 class PointConv(torch.nn.Module):
@@ -937,11 +937,11 @@ class PUAutoencoder(nn.Module):
         z_q_x = z_q_x_st
 
         if self.training:
-            p1_pred, p2_pred, p3_pred = self.decoder(z_q_x_st, centers)
-            return p1_pred, p2_pred, p3_pred, z_e_x, z_q_x, loss_vq, perplexity
+            pred = self.decoder(z_q_x_st, centers)
+            return pred, z_e_x, z_q_x, loss_vq, perplexity
         else:
-            p3_pred = self.decoder(z_q_x_st, centers)
-            return p3_pred, loss_vq
+            pred = self.decoder(z_q_x_st, centers)
+            return pred, loss_vq
 
 
 def calc_mean_std(feat, eps=1e-5):

@@ -33,12 +33,12 @@ def train_batch(model, input_pc, gt_pc, radius, stage='stage1', only_fine_loss=T
     gt_pc_FPS_512 = pointnet2_utils.gather_operation(gt_pc.permute(0, 2, 1).contiguous(), idx)
     gt_pc_FPS_512 = gt_pc_FPS_512.permute(0, 2, 1).contiguous()
     if stage == 'stage1':
-        p1_pred, p2_pred, p3_pred, _, _, loss_vq, _ = model(gt_pc)
+        pred, _, _, loss_vq, _ = model(gt_pc)
         if only_fine_loss:
-            fine_cd_dist, fine_hd_value = compute_cd_hd_distance(p3_pred, gt_pc, lamda_cd=100, lamda_hd=1)
+            fine_cd_dist, fine_hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
             # fine_emd_loss = 100.0 * compute_emd_loss(p3_pred, gt_pc, radius)
             loss = loss_vq + fine_cd_dist + fine_hd_value
-            return loss, p2_pred, p3_pred, loss_vq.item(), fine_cd_dist.item(), fine_hd_value.item()
+            return loss, loss_vq.item(), fine_cd_dist.item(), fine_hd_value.item()
         else:
             p1_cd_dist, p1_hd_value = compute_cd_hd_distance(p1_pred, gt_pc_FPS_512, lamda_cd=100, lamda_hd=10)
             coarse_cd_dist, coarse_hd_value = compute_cd_hd_distance(p2_pred, gt_pc, lamda_cd=100, lamda_hd=10)
@@ -65,27 +65,13 @@ def train_batch(model, input_pc, gt_pc, radius, stage='stage1', only_fine_loss=T
                    fine_emd_loss.item(), fine_cd_dist.item(), fine_hd_value.item()
 
     elif stage == 'stage2':
-        p1_pred, p2_pred, p3_pred = model(input_pc)  # coarse_dense_pc
-        p1_cd_dist, p1_hd_value = compute_cd_hd_distance(p1_pred, gt_pc_FPS_512, lamda_cd=100, lamda_hd=10)
-        coarse_cd_dist, coarse_hd_value = compute_cd_hd_distance(p2_pred, gt_pc, lamda_cd=100, lamda_hd=10)
-        fine_cd_dist, fine_hd_value = compute_cd_hd_distance(p3_pred, gt_pc, lamda_cd=100, lamda_hd=10)
-        # pre_cd_dist, pre_hd_value = compute_cd_hd_distance(coarse_dense_pc, gt_pc, lamda_cd=100, lamda_hd=10)
+        pred = model(input_pc)  # coarse_dense_pc
+        cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
 
-        p1_emd_loss = 100.0 * compute_emd_loss(p1_pred, gt_pc_FPS_512, radius)
-        coarse_emd_loss = 100.0 * compute_emd_loss(p2_pred, gt_pc, radius)
-        fine_emd_loss = 100.0 * compute_emd_loss(p3_pred, gt_pc, radius)
-        # pre_emd_loss = 100.0 * compute_emd_loss(coarse_dense_pc, gt_pc, radius)
-        lamda_p1 = 1
-        lamda_coarse = 1
-        lamda_fine = 1
-        loss = lamda_p1 * (p1_emd_loss + p1_cd_dist + p1_hd_value) + \
-               lamda_coarse * (coarse_emd_loss + coarse_cd_dist + coarse_hd_value) + \
-               lamda_fine * (fine_emd_loss + fine_cd_dist + fine_hd_value)
+        loss = cd_dist + hd_value
+        return loss, cd_dist.item(), hd_value.item()
 
-        return loss, p1_pred, p2_pred, p3_pred, \
-               p1_emd_loss.item(), p1_cd_dist.item(), p1_hd_value.item(), \
-               coarse_emd_loss.item(), coarse_cd_dist.item(), coarse_hd_value.item(), \
-               fine_emd_loss.item(), fine_cd_dist.item(), fine_hd_value.item()
+        return loss, cd_dist.item(), hd_value.item()
 
 
 def train_one_epoch(model: torch.nn.Module,
@@ -131,7 +117,7 @@ def train_one_epoch(model: torch.nn.Module,
             with torch.cuda.amp.autocast(enabled=True):
                 if stage == 'stage1':
                     if only_fine_loss:
-                        loss, p2_pred, p3_pred, loss_vq, fine_cd_dist, fine_hd_value = train_batch(model, gt_data, gt_data, radius_data, stage)
+                        loss, loss_vq, fine_cd_dist, fine_hd_value = train_batch(model, gt_data, gt_data, radius_data, stage)
                     else:
                         loss, p2_pred, p3_pred, loss_vq, \
                         p1_emd_loss, p1_cd_dist, p1_hd_value, \
@@ -139,10 +125,7 @@ def train_one_epoch(model: torch.nn.Module,
                         fine_emd_loss, fine_cd_dist, fine_hd_value = \
                             train_batch(model, gt_data, gt_data, radius_data, stage)
                 elif stage == 'stage2':
-                    loss, p1_pred, p2_pred, p3_pred, \
-                    p1_emd_loss, p1_cd_dist, p1_hd_value, \
-                    coarse_emd_loss, coarse_cd_dist, coarse_hd_value, \
-                    fine_emd_loss, fine_cd_dist, fine_hd_value = \
+                    loss, fine_cd_dist, fine_hd_value = \
                         train_batch(model, input_data, gt_data, radius_data, stage)
 
         loss_value = loss.item()
