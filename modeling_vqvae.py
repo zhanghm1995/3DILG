@@ -114,6 +114,7 @@ class VectorQuantizer2(nn.Module):
             torch.einsum('bd,dn->bn', z_flattened, rearrange(self.embedding.weight, 'n d -> d n'))
 
         min_encoding_indices = torch.argmin(d, dim=1)
+        print(torch.unique(min_encoding_indices))
         z_q = self.embedding(min_encoding_indices).view(z.shape)
         perplexity = None
         min_encodings = None
@@ -587,6 +588,7 @@ class PUDecoder(nn.Module):
         embeddings = embed(centers, self.basis)
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
         latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
+        latents = latents.permute(0,2,1).contiguous() # torch.Size([B, channel, num_points])
         if self.training:
             pred, gt = self.PUCRN(latents, centers)  # TODO:  [p1_pred, p2_pred, p3_pred]
             return pred
@@ -660,7 +662,7 @@ class Encoder(nn.Module):
                                              )
 
         self.M = M
-        self.ratio = N / M
+        self.ratio = N / M * 0.5 #test!!!!
         self.k = num_neighbors
 
     def forward(self, pc, fps_sample=False):

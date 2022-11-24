@@ -31,7 +31,7 @@ class CRNet(torch.nn.Module):
 
         # p3_pred = p3_pred.permute(0, 2, 1).contiguous()
         # p2_pred = p2_pred.permute(0, 2, 1).contiguous()
-        p1_pred = p1_pred.permute(0, 2, 1).contiguous()
+        p1_pred = p1_pred.permute(0, 2, 1).float().contiguous()
 
         if self.training:
             return p1_pred, gt
@@ -51,12 +51,13 @@ class SubNetwork(nn.Module):
 
     def __init__(self, up_ratio=4):
         super(SubNetwork, self).__init__()
-        self.feature_extractor = Transformer_extractor(128, 64)
+        # self.feature_extractor = Transformer_extractor(128, 64)
         self.up_unit = Upsampling_unit(up_ratio=up_ratio)
         self.regressor = MLP_CONV(in_channel=128, layer_dims=[64, 3])
 
     def forward(self, point_feat):
         # point_feat = self.feature_extractor(points)
+        # print(point_feat.size()) #torch.Size([B, C, N_points])
         up_feat = self.up_unit(point_feat)
         up_point = self.regressor(up_feat)
         # up_point = duplicated_point + torch.tanh(offest)
@@ -101,16 +102,16 @@ class Upsampling_unit(nn.Module):
         duplicated_point: upsampled results, (B, 3, up_ratio * N_input)
     """
 
-    def __init__(self, up_ratio=2):
+    def __init__(self, up_ratio=4):
         super(Upsampling_unit, self).__init__()
-        self.mlp_1 = MLP_CONV(in_channel=128, layer_dims=[64, 32])
-        self.mlp_2 = MLP_Res(in_dim=256, hidden_dim=128, out_dim=128)
-        self.deconv_branch = nn.ConvTranspose1d(32, 128, up_ratio, up_ratio, bias=False)
+        self.mlp_1 = MLP_CONV(in_channel=256, layer_dims=[64, 32]) #128
+        self.mlp_2 = MLP_Res(in_dim=512, hidden_dim=128, out_dim=128)
+        self.deconv_branch = nn.ConvTranspose1d(32, 256, up_ratio, up_ratio, bias=False)
         self.duplicated_branch = nn.Upsample(scale_factor=up_ratio)
 
-    def forward(self, point_feat):
-        deconved_feat = self.deconv_branch(self.mlp_1(point_feat))
-        duplicated_feat = self.duplicated_branch(point_feat)
+    def forward(self, point_feat):#torch.Size([64, C, N_points])
+        deconved_feat = self.deconv_branch(self.mlp_1(point_feat)) #torch.Size([B, C, 4*N_points])
+        duplicated_feat = self.duplicated_branch(point_feat) #torch.Size([B, C, 4*N_points])
         up_feat = self.mlp_2(torch.cat([deconved_feat, duplicated_feat], 1))
         up_feat = torch.relu(up_feat)
         # duplicated_point = self.duplicated_branch(points)

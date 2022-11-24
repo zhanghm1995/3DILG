@@ -22,5 +22,5 @@ torchrun --nproc_per_node=1 --master_port=$MASTER_PORT run_vqpc.py \
          --point_cloud_size 1024  \
          --save_ckpt_freq 10 --validation_freq 1 \
          --save_ckpt --stage 'stage1' --disable_eval \
-#         --test_set_size 'PU1K_input_2048' --num_test_GT_points 8192
+         --test_set_size 'PU1K_input_2048' --num_test_GT_points 8192
         #  --test --resume "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_stage1_random_2048_codes_only_fine_loss_resume_e17_cd_100_hd_1/best_cd.pth" \
