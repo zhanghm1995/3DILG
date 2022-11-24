@@ -1338,11 +1338,13 @@ def vqpc_256_2048_1024(pretrained=False, **kwargs):
 
 @register_model
 def vqpc_stage2(pretrained=False, **kwargs):
+    stage1_ckpt_path = kwargs.get("stage1_ckpt_path", None)
+
     model = VQPC_stage2(
         N=256,
         K=2048,  # 1024, 2048, 4098
         M=1024,
-        path="/home/zhanghm/Research/PU/3DILG/output/vqpc_stage1_random_2048_codes_only_fine_loss_normalize_patch/best_cd.pth",
+        path="output/vqpc_stage1_random_2048_codes_only_fine_loss_normalize_patch_wo_scale_aug/best_cd.pth",
         # TODO: move it to bash
         **kwargs)
     model.default_cfg = _cfg()

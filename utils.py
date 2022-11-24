@@ -33,7 +33,7 @@ class TensorboardLogger(object):
                 continue
             if isinstance(v, torch.Tensor):
                 v = v.item()
-            assert isinstance(v, (float, int))
+            assert isinstance(v, (float, int)), f"value is {type(v)} type."
             self.writer.add_scalar(head + "/" + k, v, self.step if step is None else step)
 
     def flush(self):

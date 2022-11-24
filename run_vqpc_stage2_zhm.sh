@@ -12,11 +12,13 @@
 export MASTER_PORT=$((12000 + $RANDOM % 20000))
 set -x
 
+work_dir="output/vqpc/stage2_PU1K_4096_codes_normalize_patch_wo_scale_aug_fine_loss_hd_1"
 torchrun --nproc_per_node=1 --master_port=$MASTER_PORT run_vqpc.py \
          --epochs 100 --lr 1e-3 --min_lr 1e-5 --warmup_epochs 0 \
-         --output_dir output/vqpc_stage2_PU1K_4096_codes_normalize_patch \
-         --log_dir output/vqpc_stage2_PU1K_4096_codes_normalize_patch/logs/ \
-         --model vqpc_stage2 --data_path ./data/PU1K/train/pu1k_poisson_256_poisson_1024_pc_2500_patch50_addpugan.h5 \
+         --output_dir ${work_dir} \
+         --log_dir ${work_dir}/logs/ \
+         --model vqpc_stage2 \
+         --data_path ./data/PU1K/train/pu1k_poisson_256_poisson_1024_pc_2500_patch50_addpugan.h5 \
          --batch_size 64 --num_workers 6 \
          --point_cloud_size 1024  \
          --save_ckpt_freq 10 --validation_freq 1 \

@@ -14,8 +14,8 @@ set -x
 
 torchrun --nproc_per_node=1 --master_port=$MASTER_PORT run_vqpc.py \
          --epochs 100 --lr 1e-3 --min_lr 1e-5 --warmup_epochs 0 \
-         --output_dir output/vqpc_stage1_random_2048_codes_only_fine_loss_normalize_patch \
-         --log_dir output/vqpc_stage1_random_2048_codes_only_fine_loss_normalize_patch/logs/ \
+         --output_dir output/vqpc_stage1_random_2048_codes_only_fine_loss_normalize_patch_wo_scale_aug \
+         --log_dir output/vqpc_stage1_random_2048_codes_only_fine_loss_normalize_patch_wo_scale_aug/logs/ \
          --model vqpc_256_2048_1024 \
          --data_path ./data/PU1K/train/pu1k_poisson_256_poisson_1024_pc_2500_patch50_addpugan.h5 \
          --batch_size 64 --num_workers 6 \

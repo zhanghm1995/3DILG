@@ -276,8 +276,9 @@ class PUGAN_Dataset(data.Dataset):
         if self.use_norm and self.use_aug:
             # for data aug
             input_data, gt_data = utils.rotate_point_cloud_and_gt(input_data, gt_data)
-            input_data, gt_data, scale = utils.random_scale_point_cloud_and_gt(input_data, gt_data,
-                                                                               scale_low=0.9, scale_high=1.1)
+            # input_data, gt_data, scale = utils.random_scale_point_cloud_and_gt(input_data, gt_data,
+            #                                                                    scale_low=0.9, scale_high=1.1)
+            scale = 1.0
             input_data, gt_data = utils.shift_point_cloud_and_gt(input_data, gt_data, shift_range=0.1)
             radius_data = radius_data * scale
 

@@ -330,7 +330,10 @@ def main(args, ds_init):
                 test_stats, best_cd, best_hd, best_cd_epoch, best_hd_epoch = test(epoch, args.output_dir,
                                                                                   data_loader_test, model, device,
                                                                                   best_cd, best_hd, best_cd_epoch,
-                                                                                  best_hd_epoch, stage=args.stage, num_GT_points=args.num_test_GT_points)
+                                                                                  best_hd_epoch, 
+                                                                                  stage=args.stage, 
+                                                                                  num_GT_points=args.num_test_GT_points,
+                                                                                  metric_writer=log_writer)
 
                 # validate(epoch, args.output_dir, data_loader_val, model, device, stage=args.stage)
 
