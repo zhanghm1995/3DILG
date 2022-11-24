@@ -18,12 +18,14 @@ class CRNet(torch.nn.Module):
 
     def __init__(self, up_ratio):
         super(CRNet, self).__init__()
-        step_up_rate = up_ratio #int(np.sqrt(up_ratio))
-        self.upsampling = SubNetwork(up_ratio=step_up_rate)
+        self.up_ratio = up_ratio
+        # step_up_rate = up_ratio  # int(np.sqrt(up_ratio))
+        self.upsampling = SubNetwork(up_ratio=self.up_ratio)
         # self.upsampling_stage_2 = SubNetwork(up_ratio=step_up_rate)
         # self.refinement_stage = SubNetwork(up_ratio=1)
+        # self.duplicated_branch = nn.Upsample(scale_factor=up_ratio)
 
-    def forward(self, point_cloud, gt=None):
+    def forward(self, point_cloud, centers):
         point_cloud = point_cloud.float().contiguous()
         p1_pred = self.upsampling(point_cloud)
         # p2_pred = self.upsampling_stage_2(p1_pred)
@@ -31,12 +33,14 @@ class CRNet(torch.nn.Module):
 
         # p3_pred = p3_pred.permute(0, 2, 1).contiguous()
         # p2_pred = p2_pred.permute(0, 2, 1).contiguous()
-        p1_pred = p1_pred.permute(0, 2, 1).float().contiguous()
+        p1_pred = p1_pred.permute(0, 2, 1).float().contiguous()  # [B, 1024, 3]
+        # p1_offset = p1_offset.permute(0, 2, 1).float().contiguous()  # [B, 1024, 3]
+        # duplicated_coord = centers.repeat(1, self.up_ratio, 1)
+        # # duplicated_coord = self.duplicated_branch(centers.permute(0, 2, 1).float().contiguous())
+        # # duplicated_coord = duplicated_coord.permute(0, 2, 1).float().contiguous()
+        # p1_pred = duplicated_coord + p1_offset
 
-        if self.training:
-            return p1_pred, gt
-        else:
-            return p1_pred
+        return p1_pred
 
 
 class SubNetwork(nn.Module):
@@ -52,13 +56,16 @@ class SubNetwork(nn.Module):
     def __init__(self, up_ratio=4):
         super(SubNetwork, self).__init__()
         # self.feature_extractor = Transformer_extractor(128, 64)
-        self.up_unit = Upsampling_unit(up_ratio=up_ratio)
-        self.regressor = MLP_CONV(in_channel=128, layer_dims=[64, 3])
+        # self.mlp = MLP_CONV(in_channel=256, layer_dims=[64, 32])  # 128
+        self.up_unit1 = Upsampling_unit(up_ratio=2)
+        self.up_unit2 = Upsampling_unit(up_ratio=2)
+        self.up_unit3 = Upsampling_unit(up_ratio=2)
+        self.regressor = MLP_CONV(in_channel=256, layer_dims=[128,64, 3])
 
     def forward(self, point_feat):
         # point_feat = self.feature_extractor(points)
         # print(point_feat.size()) #torch.Size([B, C, N_points])
-        up_feat = self.up_unit(point_feat)
+        up_feat = self.up_unit3(self.up_unit2(self.up_unit1(point_feat)))
         up_point = self.regressor(up_feat)
         # up_point = duplicated_point + torch.tanh(offest)
 
@@ -104,18 +111,20 @@ class Upsampling_unit(nn.Module):
 
     def __init__(self, up_ratio=4):
         super(Upsampling_unit, self).__init__()
-        self.mlp_1 = MLP_CONV(in_channel=256, layer_dims=[64, 32]) #128
-        self.mlp_2 = MLP_Res(in_dim=512, hidden_dim=128, out_dim=128)
-        self.deconv_branch = nn.ConvTranspose1d(32, 256, up_ratio, up_ratio, bias=False)
+        self.mlp_1 = MLP_CONV(in_channel=256, layer_dims=[128, 64])  # in_channel=128, layer_dims=[64, 32]
+        self.mlp_2 = MLP_Res(in_dim=512, hidden_dim=256, out_dim=256)
+        self.deconv_branch = nn.ConvTranspose1d(64, 256, up_ratio, up_ratio, bias=False)
         self.duplicated_branch = nn.Upsample(scale_factor=up_ratio)
 
-    def forward(self, point_feat):#torch.Size([64, C, N_points])
-        deconved_feat = self.deconv_branch(self.mlp_1(point_feat)) #torch.Size([B, C, 4*N_points])
-        duplicated_feat = self.duplicated_branch(point_feat) #torch.Size([B, C, 4*N_points])
+    def forward(self, point_feat):  # torch.Size([64, C, N_points])
+        deconved_feat = self.deconv_branch(self.mlp_1(point_feat))  # torch.Size([B, C, 4*N_points])
+        duplicated_feat = self.duplicated_branch(point_feat)  # torch.Size([B, C, 4*N_points])
         up_feat = self.mlp_2(torch.cat([deconved_feat, duplicated_feat], 1))
         up_feat = torch.relu(up_feat)
+        # print(up)
+        # up_feat = up_feat + duplicated_feat  # offset~!
         # duplicated_point = self.duplicated_branch(points)
-        return up_feat #, duplicated_point
+        return up_feat  # , duplicated_point
 
 
 def square_distance(src, dst):

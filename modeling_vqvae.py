@@ -114,7 +114,7 @@ class VectorQuantizer2(nn.Module):
             torch.einsum('bd,dn->bn', z_flattened, rearrange(self.embedding.weight, 'n d -> d n'))
 
         min_encoding_indices = torch.argmin(d, dim=1)
-        # print(torch.unique(min_encoding_indices))
+        print(torch.unique(min_encoding_indices))
         z_q = self.embedding(min_encoding_indices).view(z.shape)
         perplexity = None
         min_encodings = None
@@ -589,12 +589,8 @@ class PUDecoder(nn.Module):
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
         latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
         latents = latents.permute(0,2,1).contiguous() # torch.Size([B, channel, num_points])
-        if self.training:
-            pred, gt = self.PUCRN(latents, centers)  # TODO:  [p1_pred, p2_pred, p3_pred]
-            return pred
-        else:
-            pred = self.PUCRN(latents, centers)  # self.CRNet_upsample  # TODO: check the latents
-            return pred
+        pred = self.PUCRN(latents, centers)  # TODO:  [p1_pred, p2_pred, p3_pred]
+        return pred
 
 
 class PointConv(torch.nn.Module):
@@ -662,7 +658,7 @@ class Encoder(nn.Module):
                                              )
 
         self.M = M
-        self.ratio = N / M * 0.5 #test!!!!
+        self.ratio = N / M / 2
         self.k = num_neighbors
 
     def forward(self, pc, fps_sample=False):
@@ -696,6 +692,7 @@ class Encoder(nn.Module):
 
         x = x.view(B, -1, x.shape[-1])
         pos = pos.view(B, -1, 3)
+        # print('feature size and coordinate size: ',x.size(), pos.size()) [B, 128, 256], [B, 128, 3]
 
         embeddings = embed(pos, self.basis)
 
@@ -940,9 +937,11 @@ class PUAutoencoder(nn.Module):
 
         if self.training:
             pred = self.decoder(z_q_x_st, centers)
+            # print(pred.size())
             return pred, z_e_x, z_q_x, loss_vq, perplexity
         else:
             pred = self.decoder(z_q_x_st, centers)
+
             return pred, loss_vq
 
 
