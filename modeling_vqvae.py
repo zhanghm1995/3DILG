@@ -114,7 +114,7 @@ class VectorQuantizer2(nn.Module):
             torch.einsum('bd,dn->bn', z_flattened, rearrange(self.embedding.weight, 'n d -> d n'))
 
         min_encoding_indices = torch.argmin(d, dim=1)
-        print(torch.unique(min_encoding_indices))
+        # print(torch.unique(min_encoding_indices))
         z_q = self.embedding(min_encoding_indices).view(z.shape)
         perplexity = None
         min_encodings = None
