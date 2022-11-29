@@ -37,7 +37,7 @@ def train_batch(model, input_pc, gt_pc, radius, stage='stage1', only_fine_loss=T
         if only_fine_loss:
             fine_cd_dist, fine_hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
             # fine_emd_loss = 100.0 * compute_emd_loss(p3_pred, gt_pc, radius)
-            loss = loss_vq + fine_cd_dist + fine_hd_value
+            loss = 50 * loss_vq + fine_cd_dist + fine_hd_value
             return loss, loss_vq.item(), fine_cd_dist.item(), fine_hd_value.item()
         else:
             p1_cd_dist, p1_hd_value = compute_cd_hd_distance(p1_pred, gt_pc_FPS_512, lamda_cd=100, lamda_hd=10)

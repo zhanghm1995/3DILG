@@ -33,6 +33,7 @@ from pointnet2.utils import pointnet2_utils
 from vis_util import save_xyz_file
 from typing import Optional, List
 from PUCRN.PUCRN_new import CRNet
+from PointAttN_models.PointAttN import PCT_encoder, PCT_refine
 
 
 def _cfg(url='', **kwargs):
@@ -588,10 +589,63 @@ class PUDecoder(nn.Module):
         embeddings = embed(centers, self.basis)
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
         latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
-        latents = latents.permute(0,2,1).contiguous() # torch.Size([B, channel, num_points])
+        latents = latents.permute(0, 2, 1).contiguous()  # torch.Size([B, channel, num_points])
         pred = self.PUCRN(latents, centers)  # TODO:  [p1_pred, p2_pred, p3_pred]
         return pred
 
+class PointAttN_Decoder(nn.Module):
+    def __init__(self, latent_channel=192, up_ratio=4):
+        super().__init__()
+
+        self.fc = Embedding(latent_channel=latent_channel)
+        self.log_sigma = nn.Parameter(torch.FloatTensor([3.0]))
+        # self.register_buffer('log_sigma', torch.Tensor([-3.0]))
+
+        self.embed = Seq(Lin(48 + 3, latent_channel))  # , nn.GELU(), Lin(128, 128))
+
+        self.embedding_dim = 48
+        e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
+        e = torch.stack([
+            torch.cat([e, torch.zeros(self.embedding_dim // 6),
+                       torch.zeros(self.embedding_dim // 6)]),
+            torch.cat([torch.zeros(self.embedding_dim // 6), e,
+                       torch.zeros(self.embedding_dim // 6)]),
+            torch.cat([torch.zeros(self.embedding_dim // 6),
+                       torch.zeros(self.embedding_dim // 6), e]),
+        ])
+        self.register_buffer('basis', e)  # 3 x 16
+
+        self.transformer = VisionTransformer(embed_dim=latent_channel,
+                                             depth=6,
+                                             num_heads=6,
+                                             mlp_ratio=4.,
+                                             qkv_bias=True,
+                                             qk_scale=None,
+                                             drop_rate=0.,
+                                             attn_drop_rate=0.,
+                                             drop_path_rate=0.1,
+                                             norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                                             init_values=0.,
+                                             )
+
+        self.up_ratio = up_ratio
+        self.upsample = PCT_refine(channel=256, ratio=8)
+
+    def forward(self, latents, centers):
+        '''
+        latents: FPS points quantized features
+        centers: FPS points coordinates
+        '''
+        # kernel average
+        # samples: B x N x 3
+        # latents: B x T x 320
+        # centers: B x T x 3
+        embeddings = embed(centers, self.basis)
+        embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
+        latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
+        latents = latents.permute(0, 2, 1).contiguous()  # torch.Size([B, channel, num_points])
+        pred = self.upsample(latents, centers, embeddings.permute(0, 2, 1).contiguous())  # TODO:  [p1_pred, p2_pred, p3_pred]
+        return pred
 
 class PointConv(torch.nn.Module):
     def __init__(self, local_nn=None, global_nn=None):
@@ -621,7 +675,7 @@ class PointConv(torch.nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, N, dim=128, M=2048, num_neighbors=32):
+    def __init__(self, N, dim=128, M=2048, num_neighbors=32, down_ratio=4):
         super().__init__()
 
         self.embed = Seq(Lin(48 + 3, dim))  # , nn.GELU(), Lin(128, 128))
@@ -638,9 +692,14 @@ class Encoder(nn.Module):
         ])
         self.register_buffer('basis', e)  # 3 x 16
 
+
         # self.conv = PointConv(local_nn=Seq(weight_norm(Lin(3+self.embedding_dim, dim))))
         self.conv = PointConv(
             local_nn=Seq(weight_norm(Lin(3 + self.embedding_dim, 256)), ReLU(True), weight_norm(Lin(256, 256))),
+            global_nn=Seq(weight_norm(Lin(256, 256)), ReLU(True), weight_norm(Lin(256, dim))),
+        )
+        self.conv2 = PointConv(
+            local_nn=Seq(weight_norm(Lin(256 + self.embedding_dim, 256)), ReLU(True), weight_norm(Lin(256, 256))),
             global_nn=Seq(weight_norm(Lin(256, 256)), ReLU(True), weight_norm(Lin(256, dim))),
         )
 
@@ -658,7 +717,7 @@ class Encoder(nn.Module):
                                              )
 
         self.M = M
-        self.ratio = N / M / 2
+        self.ratio = 1 / down_ratio #N / M
         self.k = num_neighbors
 
     def forward(self, pc, fps_sample=False):
@@ -675,8 +734,8 @@ class Encoder(nn.Module):
         if fps_sample:
             idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
         else:
-            # if down_sample == 4:
-            num_needed = int(N * self.ratio) # 16 times  * self.ratio
+            # random downsample 1/4
+            num_needed = int(N * self.ratio)  # 16 times  * self.ratio
             idx = pos.new_zeros((B, num_needed), dtype=torch.long)
             for i in range(B):
                 count = i * N
@@ -688,7 +747,15 @@ class Encoder(nn.Module):
         edge_index = torch.stack([col, row], dim=0)
 
         x = self.conv(pos, pos[idx], edge_index, self.basis)
+
         pos, batch = pos[idx], batch[idx]
+
+        # # then fps half
+        # idx = fps(pos, batch, ratio=0.5)
+        # row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
+        # edge_index = torch.stack([col, row], dim=0)
+        # x = self.conv2(x, x[idx], edge_index, self.basis)
+        # pos, batch = pos[idx], batch[idx]
 
         x = x.view(B, -1, x.shape[-1])
         pos = pos.view(B, -1, 3)
@@ -704,7 +771,7 @@ class Encoder(nn.Module):
 
 
 class Stage2Encoder(nn.Module):
-    def __init__(self, N=256, dim=128, M=2048, num_neighbors=32):
+    def __init__(self, N=256, dim=128, M=2048, num_neighbors=32, down_ratio=8):
         super().__init__()
 
         self.embed = Seq(Lin(48 + 3, dim))  # , nn.GELU(), Lin(128, 128))
@@ -742,8 +809,8 @@ class Stage2Encoder(nn.Module):
 
         self.M = M  # 1024
         self.N = N  # 256
-        self.ratio = N / M  # 0.25
-        self.up_ratio = M / N  # 4
+        self.ratio = 1 / down_ratio #N / M  # 0.25
+        self.up_ratio = down_ratio #M / N  # 4
         self.k = num_neighbors  # smaller 32->8
         self.step_up_rate = int(np.sqrt(self.up_ratio))
 
@@ -862,9 +929,11 @@ class PUAutoencoder(nn.Module):
     def __init__(self, N, K=512, dim=256, M=2048, num_neighbors=32, **kwargs):
         super().__init__()
 
-        self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
+        self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors, down_ratio=8)
+        # self.encoder = PCT_encoder()
+        # self.decoder = PUDecoder(latent_channel=dim)
+        self.decoder = PointAttN_Decoder(latent_channel=dim, up_ratio=8)
 
-        self.decoder = PUDecoder(latent_channel=dim)
 
         self.codebook = VectorQuantizer2(K, dim)
         self.M = M
@@ -878,7 +947,8 @@ class PUAutoencoder(nn.Module):
     def encode(self, x, bins=256):
         B, _, _ = x.shape
 
-        z_e_x, centers = self.encoder(x)  # B x T x C, B x T x 3
+        z_e_x, centers = self.encoder(x)  # self.encoder(x)  # B x T x C, B x T x 3
+        # print('feature range: ', torch.min(z_e_x), torch.max(z_e_x))
 
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 
@@ -911,14 +981,14 @@ class PUAutoencoder(nn.Module):
 
             ## Normalize
             centroid = torch.mean(patch, axis=1, keepdims=True)
-            points_mean = patch - centroid # (B, N, 3)
+            points_mean = patch - centroid  # (B, N, 3)
             furthest_distance = torch.max(
-                torch.sqrt(torch.sum(points_mean ** 2, axis=-1)), dim=1, keepdims=True)[0] # (B, 1)
-            furthest_distance = furthest_distance[..., None] # (B, 1, 1)
+                torch.sqrt(torch.sum(points_mean ** 2, axis=-1)), dim=1, keepdims=True)[0]  # (B, 1)
+            furthest_distance = furthest_distance[..., None]  # (B, 1, 1)
 
             normalized_patch = points_mean / furthest_distance
 
-            up_point, _ = self(normalized_patch) # up_point: (B, N, 3)
+            up_point, _ = self(normalized_patch)  # up_point: (B, N, 3)
             ## UnNormalize
             up_point = up_point * furthest_distance + centroid
 
@@ -987,10 +1057,10 @@ class VQPC_stage2(nn.Module):
     def __init__(self, N=256, K=1024, dim=256, M=1024, num_neighbors=32, path=None, **kwargs):
         super().__init__()
         # self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
-        self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)  # first upsample
+        self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors, down_ratio=8)  # first upsample
 
-        self.decoder = PUDecoder(latent_channel=dim)
-
+        # self.decoder = PUDecoder(latent_channel=dim)
+        self.decoder = PointAttN_Decoder(latent_channel=dim, up_ratio=8)
         self.codebook = VectorQuantizer2(K, dim)
 
         self.M = M
@@ -1110,7 +1180,7 @@ class VQPC_stage2(nn.Module):
         lr_num_points = points.shape[1]
         # gt_num_points = lr_num_points * 4
         # seed_num = int(gt_num_points / self.M * self.patch_num_ratio) #8192/1024*3
-        seed_num = int((lr_num_points / self.N)*2)
+        seed_num = int((lr_num_points / self.N) * 2)
 
         ## FPS sampling
         further_point_idx = pointnet2_utils.furthest_point_sample(points, seed_num)
@@ -1130,7 +1200,7 @@ class VQPC_stage2(nn.Module):
         for i in range(top_k_neareast_idx.size()[1]):
             idx = top_k_neareast_idx[:, i, :].contiguous()  # torch.Size([1, 1024])
             patch = pointnet2_utils.gather_operation(points.permute(0, 2, 1).contiguous(),
-                                                    idx)
+                                                     idx)
             patch = patch.permute(0, 2, 1).contiguous()  # torch.Size([1, 1024, 3])
 
             ## Normalize
@@ -1238,6 +1308,7 @@ class VQPC_stage2_without_VQ(nn.Module):
             p3_pred = self.decoder(random_feat, centers)
             return p3_pred
 
+
 @register_model
 def vqvae_64_1024_2048(pretrained=False, **kwargs):
     model = Autoencoder(
@@ -1306,8 +1377,9 @@ def vqvae_512_1024_2048(pretrained=False, **kwargs):
 def vqpc_256_1024_1024(pretrained=False, **kwargs):
     model = PUAutoencoder(
         N=256,
-        K=1024, #try 2048, 4096
+        K=1024,  # try 2048, 4096
         M=1024,
+        num_neighbors=32,
         **kwargs)
     model.default_cfg = _cfg()
     # pretrained_path = "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_s1_4x_PUGAN_permute_channel/best_cd.pth"
@@ -1322,11 +1394,12 @@ def vqpc_256_1024_1024(pretrained=False, **kwargs):
         # print('==========load pretrained stage1 model from vqpc_s1_4x_PUGAN_permute_channel!============')
     return model
 
+
 @register_model
 def vqpc_256_2048_1024(pretrained=False, **kwargs):
     model = PUAutoencoder(
         N=256,
-        K=2048, #try 2048, 4096
+        K=2048,  # try 2048, 4096
         M=1024,
         **kwargs)
     model.default_cfg = _cfg()
@@ -1336,6 +1409,7 @@ def vqpc_256_2048_1024(pretrained=False, **kwargs):
         )
         model.load_state_dict(checkpoint["model"])
     return model
+
 
 @register_model
 def vqpc_stage2(pretrained=False, **kwargs):
@@ -1353,6 +1427,7 @@ def vqpc_stage2(pretrained=False, **kwargs):
         )
         model.load_state_dict(checkpoint["model"])
     return model
+
 
 @register_model
 def vqpc_stage2_without_VQ(pretrained=False, **kwargs):

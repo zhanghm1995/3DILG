@@ -60,7 +60,7 @@ class SubNetwork(nn.Module):
         self.up_unit1 = Upsampling_unit(up_ratio=2)
         self.up_unit2 = Upsampling_unit(up_ratio=2)
         self.up_unit3 = Upsampling_unit(up_ratio=2)
-        self.regressor = MLP_CONV(in_channel=256, layer_dims=[128,64, 3])
+        self.regressor = MLP_CONV(in_channel=256, layer_dims=[128, 64, 3])
 
     def forward(self, point_feat):
         # point_feat = self.feature_extractor(points)
