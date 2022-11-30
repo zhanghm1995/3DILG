@@ -71,8 +71,6 @@ def train_batch(model, input_pc, gt_pc, radius, stage='stage1', only_fine_loss=T
         loss = cd_dist + hd_value
         return loss, cd_dist.item(), hd_value.item()
 
-        return loss, cd_dist.item(), hd_value.item()
-
 
 def train_one_epoch(model: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,

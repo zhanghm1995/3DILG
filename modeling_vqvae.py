@@ -34,7 +34,7 @@ from vis_util import save_xyz_file
 from typing import Optional, List
 from PUCRN.PUCRN_new import CRNet
 from PointAttN_models.PointAttN import PCT_encoder, PCT_refine
-
+from quantize import EMAVectorQuantizer
 
 def _cfg(url='', **kwargs):
     return {
@@ -573,9 +573,7 @@ class PUDecoder(nn.Module):
                                              init_values=0.,
                                              )
 
-        self.up_ratio = up_ratio
-
-        self.PUCRN = CRNet(up_ratio=4)  # self.CRNet_upsample 16 times
+        self.PCT_upsample = PointAttN_Decoder(latent_channel=latent_channel, up_ratio=up_ratio) #CRNet(up_ratio=4)  # self.CRNet_upsample 16 times
 
     def forward(self, latents, centers):
         '''
@@ -590,7 +588,7 @@ class PUDecoder(nn.Module):
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
         latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
         latents = latents.permute(0, 2, 1).contiguous()  # torch.Size([B, channel, num_points])
-        pred = self.PUCRN(latents, centers)  # TODO:  [p1_pred, p2_pred, p3_pred]
+        pred = self.PCT_upsample(latents, centers, )
         return pred
 
 class PointAttN_Decoder(nn.Module):
@@ -628,8 +626,7 @@ class PointAttN_Decoder(nn.Module):
                                              init_values=0.,
                                              )
 
-        self.up_ratio = up_ratio
-        self.upsample = PCT_refine(channel=256, ratio=8)
+        self.upsample = PCT_refine(channel=256, ratio=up_ratio)
 
     def forward(self, latents, centers):
         '''
@@ -644,7 +641,7 @@ class PointAttN_Decoder(nn.Module):
         embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
         latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
         latents = latents.permute(0, 2, 1).contiguous()  # torch.Size([B, channel, num_points])
-        pred = self.upsample(latents, centers, embeddings.permute(0, 2, 1).contiguous())  # TODO:  [p1_pred, p2_pred, p3_pred]
+        pred = self.upsample(latents, centers, embeddings.permute(0, 2, 1).contiguous())
         return pred
 
 class PointConv(torch.nn.Module):
@@ -692,14 +689,9 @@ class Encoder(nn.Module):
         ])
         self.register_buffer('basis', e)  # 3 x 16
 
-
         # self.conv = PointConv(local_nn=Seq(weight_norm(Lin(3+self.embedding_dim, dim))))
         self.conv = PointConv(
             local_nn=Seq(weight_norm(Lin(3 + self.embedding_dim, 256)), ReLU(True), weight_norm(Lin(256, 256))),
-            global_nn=Seq(weight_norm(Lin(256, 256)), ReLU(True), weight_norm(Lin(256, dim))),
-        )
-        self.conv2 = PointConv(
-            local_nn=Seq(weight_norm(Lin(256 + self.embedding_dim, 256)), ReLU(True), weight_norm(Lin(256, 256))),
             global_nn=Seq(weight_norm(Lin(256, 256)), ReLU(True), weight_norm(Lin(256, dim))),
         )
 
@@ -717,7 +709,7 @@ class Encoder(nn.Module):
                                              )
 
         self.M = M
-        self.ratio = 1 / down_ratio #N / M
+        self.ratio = 1 / down_ratio #N / M #/ 2
         self.k = num_neighbors
 
     def forward(self, pc, fps_sample=False):
@@ -734,8 +726,7 @@ class Encoder(nn.Module):
         if fps_sample:
             idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
         else:
-            # random downsample 1/4
-            num_needed = int(N * self.ratio)  # 16 times  * self.ratio
+            num_needed = int(N * self.ratio)
             idx = pos.new_zeros((B, num_needed), dtype=torch.long)
             for i in range(B):
                 count = i * N
@@ -747,15 +738,7 @@ class Encoder(nn.Module):
         edge_index = torch.stack([col, row], dim=0)
 
         x = self.conv(pos, pos[idx], edge_index, self.basis)
-
         pos, batch = pos[idx], batch[idx]
-
-        # # then fps half
-        # idx = fps(pos, batch, ratio=0.5)
-        # row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
-        # edge_index = torch.stack([col, row], dim=0)
-        # x = self.conv2(x, x[idx], edge_index, self.basis)
-        # pos, batch = pos[idx], batch[idx]
 
         x = x.view(B, -1, x.shape[-1])
         pos = pos.view(B, -1, 3)
@@ -771,7 +754,7 @@ class Encoder(nn.Module):
 
 
 class Stage2Encoder(nn.Module):
-    def __init__(self, N=256, dim=128, M=2048, num_neighbors=32, down_ratio=8):
+    def __init__(self, N=256, dim=128, M=2048, num_neighbors=32):
         super().__init__()
 
         self.embed = Seq(Lin(48 + 3, dim))  # , nn.GELU(), Lin(128, 128))
@@ -809,8 +792,8 @@ class Stage2Encoder(nn.Module):
 
         self.M = M  # 1024
         self.N = N  # 256
-        self.ratio = 1 / down_ratio #N / M  # 0.25
-        self.up_ratio = down_ratio #M / N  # 4
+        self.ratio = N / M  # 0.25
+        self.up_ratio = M / N  # 4
         self.k = num_neighbors  # smaller 32->8
         self.step_up_rate = int(np.sqrt(self.up_ratio))
 
@@ -821,7 +804,7 @@ class Stage2Encoder(nn.Module):
         #     param.requires_grad = False
         # self.linear_start = nn.Conv1d(3, dim, 1)
 
-    def forward(self, pc, direct_predict_code=True, load_pretrained_upsampling_net=True, pointnet=True):
+    def old_forward(self, pc, direct_predict_code=True, load_pretrained_upsampling_net=False, pointnet=True):
         '''
         pc: input LR point cloud: 256 points [B, 256, 3]
         N: num of points in sparse point cloud
@@ -884,6 +867,36 @@ class Stage2Encoder(nn.Module):
 
         return out, pos  # , coarse_dense_pc # [B, 1024, 3]
 
+    def forward(self, pc):
+        '''
+        pc: input LR point cloud: 256 points [B, 256, 3]
+        N: num of points in sparse point cloud
+        '''
+
+        B, N, D = pc.shape
+        assert N == self.N  # 256
+        flattened = rearrange(pc, 'B N D -> (B N) D').contiguous()  # [B*256, 3] flattened sparse pc
+
+        batch = torch.arange(B).to(pc.device)
+        batch = torch.repeat_interleave(batch, N)
+
+        pos = flattened
+
+        row, col = knn(pos, pos, self.k, batch, batch)  # // 4
+        edge_index = torch.stack([col, row], dim=0)
+        x = self.conv(pos, pos, edge_index, self.basis)
+
+        x = x.view(B, -1, x.shape[-1])
+        pos = pos.view(B, -1, 3)
+
+        embeddings = embed(pos, self.basis)
+
+        embeddings = self.embed(torch.cat([pos, embeddings], dim=2))
+
+        out = self.transformer(x, embeddings)
+
+        return out, pos  # , coarse_dense_pc # [B, 1024, 3]
+
 
 class Autoencoder(nn.Module):
     def __init__(self, N, K=512, dim=256, M=2048, num_neighbors=32):
@@ -926,16 +939,16 @@ class Autoencoder(nn.Module):
 
 
 class PUAutoencoder(nn.Module):
-    def __init__(self, N, K=512, dim=256, M=2048, num_neighbors=32, **kwargs):
+    def __init__(self, N, K=1024, dim=256, M=1024, num_neighbors=32, **kwargs):
         super().__init__()
 
-        self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors, down_ratio=8)
+        self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors, down_ratio=4)
         # self.encoder = PCT_encoder()
         # self.decoder = PUDecoder(latent_channel=dim)
-        self.decoder = PointAttN_Decoder(latent_channel=dim, up_ratio=8)
+        self.decoder = PointAttN_Decoder(latent_channel=dim, up_ratio=4)
 
-
-        self.codebook = VectorQuantizer2(K, dim)
+        # self.codebook = VectorQuantizer2(K, dim)
+        self.codebook = EMAVectorQuantizer(K, dim, beta=0.25)
         self.M = M
         self.N = N
         self.patch_num_ratio = 3
@@ -952,7 +965,8 @@ class PUAutoencoder(nn.Module):
 
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 
-        z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
+        z_q_x_st, loss_vq, info = self.codebook(z_e_x)
+        perplexity, encodings, encoding_indices = info
         return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
 
     def pc_prediction(self, points):
@@ -1056,12 +1070,12 @@ class VQPC_stage2(nn.Module):
 
     def __init__(self, N=256, K=1024, dim=256, M=1024, num_neighbors=32, path=None, **kwargs):
         super().__init__()
-        # self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
-        self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors, down_ratio=8)  # first upsample
+        # self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
+        self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)  # sparse->feature->predict code index
 
-        # self.decoder = PUDecoder(latent_channel=dim)
-        self.decoder = PointAttN_Decoder(latent_channel=dim, up_ratio=8)
-        self.codebook = VectorQuantizer2(K, dim)
+        self.decoder = PointAttN_Decoder(latent_channel=dim, up_ratio=4) #PUDecoder(latent_channel=dim, up_ratio=4)
+
+        self.codebook = EMAVectorQuantizer(K, dim, beta=0.25)  #VectorQuantizer2(K, dim)
 
         self.M = M
         self.N = N
@@ -1120,7 +1134,7 @@ class VQPC_stage2(nn.Module):
     def Stage2Encode(self, x, bins=256, generate_index='predict'):
         B, _, _ = x.shape
 
-        fps_feature, centers = self.Stage2Encoder(x)  # B x C x N, B x N x 3
+        downsampled_feature, centers = self.Stage2Encoder(x)  # B x C x N, B x N x 3
 
         # # ################# Transformer ###################
         # # quant_feat, codebook_loss, quant_stats = self.quantize(lq_feat)
@@ -1136,26 +1150,26 @@ class VQPC_stage2(nn.Module):
         # logits = self.idx_pred_layer(query_emb)  # (hw)bn
         if generate_index == 'predict':
             # z_e_x = rearrange(fps_feature, 'B C N -> (B N) C').contiguous()  # z_e_x: torch.Size([32*256, 256])
-            z_e_x = rearrange(fps_feature, 'B C N -> N B C').contiguous()  # z_e_x: torch.Size([32*256, 256])
+            z_e_x = rearrange(downsampled_feature, 'B C N -> B N C').contiguous()  # z_e_x: torch.Size([32*256, 256])
 
             logits = self.idx_pred_layer(z_e_x)  # NBC    logits: torch.Size([32*256, 1024])
-            logits = logits.permute(1, 0, 2)  # (hw)bn -> b(hw)n
+            # logits = logits.permute(1, 0, 2)  # (hw)bn -> b(hw)n
             soft_one_hot = F.softmax(logits, dim=2)
             # soft_one_hot = F.softmax(logits, dim=1)
             if self.training:
                 quant_feat = torch.einsum('btn,nc->btc', [soft_one_hot, self.codebook.embedding.weight])
                 # b(hw)c -> bc(hw) -> bchw
-                quant_feat = quant_feat.permute(0, 2, 1).view(fps_feature.shape)
+                quant_feat = quant_feat.permute(0, 2, 1).view(downsampled_feature.shape)
             else:
                 _, top_idx = torch.topk(soft_one_hot, 1, dim=2)
                 quant_feat = self.codebook.get_codebook_entry(top_idx,
-                                                              shape=fps_feature.shape)  # [x.shape[0], 16, 16, 256]
+                                                              shape=downsampled_feature.shape)  # [x.shape[0], 16, 16, 256]
 
-            quant_feat = adaptive_instance_normalization(quant_feat, fps_feature)
+            quant_feat = adaptive_instance_normalization(quant_feat, downsampled_feature)
 
         elif generate_index == 'neareatneighbor':
             # z = rearrange(z, 'b c N-> b N c').contiguous()
-            z_flattened = rearrange(fps_feature, 'B C N -> (B N) C').contiguous()
+            z_flattened = rearrange(downsampled_feature, 'B C N -> (B N) C').contiguous()
             # z_flattened = rearrange(fps_feature, 'B N C -> (B N) C').contiguous()
             # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
 
@@ -1164,8 +1178,8 @@ class VQPC_stage2(nn.Module):
                 torch.einsum('bd,dn->bn', z_flattened, rearrange(self.codebook.embedding.weight, 'n d -> d n'))
 
             min_encoding_indices = torch.argmin(d, dim=1)
-            quant_feat = self.codebook.embedding(min_encoding_indices).view(fps_feature.shape)
-            quant_feat = fps_feature + (quant_feat - fps_feature).detach()
+            quant_feat = self.codebook.embedding(min_encoding_indices).view(downsampled_feature.shape)
+            quant_feat = downsampled_feature + (quant_feat - downsampled_feature).detach()
 
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 
@@ -1180,7 +1194,7 @@ class VQPC_stage2(nn.Module):
         lr_num_points = points.shape[1]
         # gt_num_points = lr_num_points * 4
         # seed_num = int(gt_num_points / self.M * self.patch_num_ratio) #8192/1024*3
-        seed_num = int((lr_num_points / self.N) * 2)
+        seed_num = int((lr_num_points / self.N) * 3)
 
         ## FPS sampling
         further_point_idx = pointnet2_utils.furthest_point_sample(points, seed_num)
@@ -1227,12 +1241,8 @@ class VQPC_stage2(nn.Module):
 
         centers = centers_quantized.float() / 255.0 * 2 - 1
 
-        if self.training:
-            p1_pred, p2_pred, p3_pred = self.decoder(quant_feat, centers)
-            return p1_pred, p2_pred, p3_pred  # coarse_dense_pc.contiguous()
-        else:
-            p3_pred = self.decoder(quant_feat, centers)
-            return p3_pred
+        pred = self.decoder(quant_feat, centers)
+        return pred
 
 
 class VQPC_stage2_without_VQ(nn.Module):
@@ -1379,7 +1389,6 @@ def vqpc_256_1024_1024(pretrained=False, **kwargs):
         N=256,
         K=1024,  # try 2048, 4096
         M=1024,
-        num_neighbors=32,
         **kwargs)
     model.default_cfg = _cfg()
     # pretrained_path = "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_s1_4x_PUGAN_permute_channel/best_cd.pth"
@@ -1415,9 +1424,9 @@ def vqpc_256_2048_1024(pretrained=False, **kwargs):
 def vqpc_stage2(pretrained=False, **kwargs):
     model = VQPC_stage2(
         N=256,
-        K=2048,  # 1024, 2048, 4098
+        K=1024,  # 1024, 2048, 4098
         M=1024,
-        path="/home/zhanghm/Research/PU/3DILG/output/vqpc_stage1_random_2048_codes_only_fine_loss_normalize_patch/best_cd.pth",
+        path="/mntnfs/cui_data4/yanchengwang/3DILG/output/stage1_random_4_pe_EMA_VQ_offset/best_cd.pth",
         # TODO: move it to bash
         **kwargs)
     model.default_cfg = _cfg()

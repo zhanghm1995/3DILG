@@ -14,6 +14,8 @@ from PUCRN.PUCRN_new import MLP_CONV
 from torch.nn import Sequential as Seq
 from torch.nn import Linear as Lin
 import numpy as np
+
+
 class cross_transformer(nn.Module):
 
     def __init__(self, d_model=256, d_model_out=256, nhead=4, dim_feedforward=1024, dropout=0.0):
@@ -38,7 +40,7 @@ class cross_transformer(nn.Module):
         return tensor if pos is None else tensor + pos
 
     # 原始的transformer
-    def forward(self, src1, src2, embed1, embed2, if_act=False):
+    def forward(self, src1, src2, embed1=None, embed2=None, if_act=False):
         src1 = self.with_pos_embed(src1, pos=embed1)
         src2 = self.with_pos_embed(src2, pos=embed2)
         src1 = self.input_proj(src1)
@@ -98,6 +100,7 @@ class PCT_refine(nn.Module):
         '''
         :param x: input feature
         :param coarse: input xyz
+        :param embedding: positional embedding
         :return:
         '''
         xyz = xyz.permute(0, 2, 1).contiguous()
@@ -107,21 +110,22 @@ class PCT_refine(nn.Module):
 
         # feat_g = self.conv_1(self.relu(self.conv_11(feat_g)))  # B, C, N
         # y0 = y #torch.cat([y, feat_g.repeat(1, 1, y.shape[-1])], dim=1)
-        y0 = feature
+        y0 = feature  # torch.Size([64, C=256, N=128])
         # print('==========================', y0.size(), embedding.size())
-        y1 = self.sa1(y0, y0, embed1=embedding, embed2=embedding)
-        y2 = self.sa2(y1, y1, embed1=embedding, embed2=embedding)
-        y3 = self.sa3(y2, y2, embed1=embedding, embed2=embedding)
+        y1 = self.sa1(y0, y0, embedding, embedding)
+        y2 = self.sa2(y1, y1, embedding, embedding)  #
+        y3 = self.sa3(y2, y2, embedding, embedding)  #
         y3 = self.conv_ps(y3).reshape(batch_size, -1, N * self.ratio)  # [B,256,1024]
         up_point = self.regressor(y3)
-        # predict = up_point + xyz.repeat(1, 1, self.ratio)
+        predict = up_point + xyz.repeat(1, 1, self.ratio)
         # y_up = y.repeat(1, 1, self.ratio)
         # y_cat = torch.cat([y3, y_up], dim=1)
         # y4 = self.conv_delta(y_cat)
         #
         # x = self.conv_out(self.relu(self.conv_out1(y4))) + xyz.repeat(1, 1, self.ratio)
-        x = up_point.float().permute(0, 2, 1).contiguous() #x.
+        x = predict.float().permute(0, 2, 1).contiguous()
         return x  # final xyz, final feature
+
 
 def embed(input, basis):
     # print(input.size(), basis.size())
@@ -131,6 +135,7 @@ def embed(input, basis):
     # print(projections.size()) #torch.Size([B, 512, 24])
     embeddings = torch.cat([projections.sin(), projections.cos()], dim=2)
     return embeddings  # B x N x E
+
 
 class PCT_encoder(nn.Module):
     def __init__(self, channel=64):
@@ -143,8 +148,8 @@ class PCT_encoder(nn.Module):
         self.sa1_1 = cross_transformer(channel * 2, channel * 2)
         self.sa2 = cross_transformer((channel) * 2, channel * 2)
         self.sa2_1 = cross_transformer((channel) * 4, channel * 4)
-        self.sa3 = cross_transformer((channel) * 4, channel * 4)
-        self.sa3_1 = cross_transformer((channel) * 8, channel * 8)
+        # self.sa3 = cross_transformer((channel) * 4, channel * 4)
+        # self.sa3_1 = cross_transformer((channel) * 8, channel * 8)
 
         self.relu = nn.GELU()
 
@@ -152,16 +157,16 @@ class PCT_encoder(nn.Module):
         # self.sa1_d = cross_transformer(channel * 8, channel * 8)
         # self.sa2_d = cross_transformer(channel * 8, channel * 8)
 
-        self.conv_out = nn.Conv1d(512, 256, kernel_size=1)
+        self.conv_out = nn.Conv1d(channel * 4, 256, kernel_size=1)
         # self.conv_out1 = nn.Conv1d(channel * 4, 64, kernel_size=1)
         # self.ps = nn.ConvTranspose1d(channel * 8, channel, 128, bias=True)
         # self.ps_refuse = nn.Conv1d(channel, channel * 8, kernel_size=1)
         # self.ps_adj = nn.Conv1d(channel * 8, channel * 8, kernel_size=1)
 
-        #positional embedding
-        self.embed_1 = Seq(Lin(48 + 3, channel * 2))  # , nn.GELU(), Lin(128, 128))
-        self.embed_2 = Seq(Lin(48 + 3, channel * 4))
-        self.embed_3 = Seq(Lin(48 + 3, channel * 8))
+        # positional embedding
+        self.embed_1 = Seq(Lin(48 + 3, channel))  # , nn.GELU(), Lin(128, 128))
+        # self.embed_2 = Seq(Lin(48 + 3, channel * 4))
+        # self.embed_3 = Seq(Lin(48 + 3, channel * 8))
 
         self.embedding_dim = 48
         e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
@@ -174,8 +179,6 @@ class PCT_encoder(nn.Module):
                        torch.zeros(self.embedding_dim // 6), e]),
         ])
         self.register_buffer('basis', e)  # 3 x 16
-
-
 
     def original_forward(self, points):
         batch_size, _, N = points.size()
@@ -230,12 +233,12 @@ class PCT_encoder(nn.Module):
         return  sampled pc feature: torch.Size([B, N=128, C=256]); sampled pc coord: torch.Size([64, 128, 3])
         '''
         points = ori_points.permute(0, 2, 1).contiguous()
-
         batch_size, D, N = points.size()
+        xyz = points.permute(0, 2, 1).contiguous()  # torch.Size([64, 1024, 3])
         flattened = ori_points.view(batch_size * N, D)
 
         x = self.relu(self.conv1(points))  # B, D, N
-        x0 = self.conv2(x).float()
+        x0 = self.conv2(x).float()  # torch.Size([B=64, 64, 1024])
 
         # GDP
         # idx_0 = pn2_utils.furthest_point_sample(ori_points, N // 2)
@@ -244,17 +247,20 @@ class PCT_encoder(nn.Module):
         for i in range(batch_size):
             idx_0[i] = torch.randperm(N, device=points.device)[:num_needed]
 
-        x_g0 = pn2_utils.gather_operation(x0, idx_0)
+        x_g0 = pn2_utils.gather_operation(x0, idx_0)  # torch.Size([B=64, 64, 512])
         points = pn2_utils.gather_operation(points, idx_0)  # sampled pc coordinate
-        xyz = points.permute(0, 2, 1).contiguous()
-        embeddings_1 = embed(xyz, self.basis)
-        # print('==============',xyz.size(), embeddings_1.size())
-        embeddings_1 = self.embed_1(torch.cat([xyz, embeddings_1], dim=2))  # 3 + 48 -> 256
 
-        x1 = self.sa1(x_g0, x0, embed1=embeddings_1, embed2=embeddings_1).contiguous()
+        embeddings_x0 = embed(xyz, self.basis)  # torch.Size([64, 1024, 48])
+        embeddings_x0 = self.embed_1(torch.cat([xyz, embeddings_x0], dim=2)).float().permute(0, 2,
+                                                                                             1).contiguous()  # 3 + 48 -> 256 64
+
+        embedding_g0 = pn2_utils.gather_operation(embeddings_x0, idx_0)
+        # print(x_g0.size(), x0.size(), embedding_g0.size(), embeddings_x0.size())
+        x1 = self.sa1(x_g0, x0, embed1=embedding_g0, embed2=embeddings_x0).contiguous()
         x1 = torch.cat([x_g0, x1], dim=1)
         # SFA
-        x1 = self.sa1_1(x1, x1, embed1=embeddings_1, embed2=embeddings_1).contiguous().float()
+        # print('=================', x1.size(), embedding_g0.size())
+        x1 = self.sa1_1(x1, x1).contiguous().float()  # , embed1=embedding_g0, embed2=embedding_g0
 
         # GDP
         num_needed = int(N // 4)  # 16 times  * self.ratio
@@ -265,32 +271,34 @@ class PCT_encoder(nn.Module):
         # idx_1 = pn2_utils.furthest_point_sample(points.permute(0, 2, 1).contiguous(), N // 4)
         x_g1 = pn2_utils.gather_operation(x1.contiguous(), idx_1)  # B,C,N
         points = pn2_utils.gather_operation(points, idx_1)
-        xyz = points.permute(0, 2, 1).contiguous()
-        embeddings_2 = embed(xyz, self.basis)
-        embeddings_2 = self.embed_2(torch.cat([xyz, embeddings_2], dim=2))  # 3 + 48 -> 256
+        # xyz = points.permute(0, 2, 1).contiguous()
+        # embeddings_2 = embed(xyz, self.basis)
+        # embeddings_2 = self.embed_2(torch.cat([xyz, embeddings_2], dim=2))  # 3 + 48 -> 256
         # x_g1 = pn2_utils.gather_operation(x1, idx_1)
         # points = pn2_utils.gather_operation(points, idx_1)
-        x2 = self.sa2(x_g1, x1, embed1=embeddings_2, embed2=embeddings_1).contiguous()  # C*2, N
+
+        # embedding_g1 = pn2_utils.gather_operation(embedding_g0.float(), x_g1)
+        x2 = self.sa2(x_g1, x1).contiguous()  # C*2, N , embed1=embedding_g1, embed2=embedding_g0
         x2 = torch.cat([x_g1, x2], dim=1)
         # SFA
-        x2 = self.sa2_1(x2, x2, embed1=embeddings_2, embed2=embeddings_2).contiguous().float()
+        x2 = self.sa2_1(x2, x2).contiguous().float()  # , embed1=embedding_g1, embed2=embedding_g1
 
-        # GDP
-        # idx_2 = pn2_utils.furthest_point_sample(points.permute(0, 2, 1).contiguous(), N // 8)
-        num_needed = int(N // 8)  # 16 times  * self.ratio
-        idx_2 = flattened.new_zeros((batch_size, num_needed), dtype=torch.int)
-        for i in range(batch_size):
-            idx_2[i] = torch.randperm(N // 4, device=points.device)[:num_needed]
-        x_g2 = pn2_utils.gather_operation(x2, idx_2)  # B,C,N
-        # x_g2 = pn2_utils.gather_operation(x2, idx_2)
-        points = pn2_utils.gather_operation(points, idx_2)
-        xyz = points.permute(0, 2, 1).contiguous()
-        embeddings_3 = embed(xyz, self.basis)
-        embeddings_3 = self.embed_3(torch.cat([xyz, embeddings_3], dim=2))  # 3 + 48 -> 256
-        x3 = self.sa3(x_g2, x2, embed1=embeddings_3, embed2=embeddings_2).contiguous()  # C*4, N/4
-        x3 = torch.cat([x_g2, x3], dim=1)
-        # SFA
-        x3 = self.sa3_1(x3, x3, embed1=embeddings_3, embed2=embeddings_3).contiguous()
+        # # GDP
+        # # idx_2 = pn2_utils.furthest_point_sample(points.permute(0, 2, 1).contiguous(), N // 8)
+        # num_needed = int(N // 8)  # 16 times  * self.ratio
+        # idx_2 = flattened.new_zeros((batch_size, num_needed), dtype=torch.int)
+        # for i in range(batch_size):
+        #     idx_2[i] = torch.randperm(N // 4, device=points.device)[:num_needed]
+        # x_g2 = pn2_utils.gather_operation(x2, idx_2)  # B,C,N
+        # # x_g2 = pn2_utils.gather_operation(x2, idx_2)
+        # points = pn2_utils.gather_operation(points, idx_2)
+        # xyz = points.permute(0, 2, 1).contiguous()
+        # embeddings_3 = embed(xyz, self.basis)
+        # embeddings_3 = self.embed_3(torch.cat([xyz, embeddings_3], dim=2))  # 3 + 48 -> 256
+        # x3 = self.sa3(x_g2, x2, embed1=embeddings_3, embed2=embeddings_2).contiguous()  # C*4, N/4
+        # x3 = torch.cat([x_g2, x3], dim=1)
+        # # SFA
+        # x3 = self.sa3_1(x3, x3, embed1=embeddings_3, embed2=embeddings_3).contiguous()
 
         # # seed generator
         # # maxpooling
@@ -304,7 +312,7 @@ class PCT_encoder(nn.Module):
         # x2_d = (self.sa2_d(x1_d, x1_d)).reshape(batch_size, self.channel * 4, N // 8)
         #
         # fine = self.conv_out(self.relu(self.conv_out1(x2_d)))
-        sparse_feature = self.conv_out(x3)
+        sparse_feature = self.conv_out(x2)
         # print('=================output feature size: ', sparse_feature.size())  # torch.Size([B, C=256, N=128])
         sparse_feature = sparse_feature.permute(0, 2, 1).contiguous()
         points = points.permute(0, 2, 1).contiguous()
