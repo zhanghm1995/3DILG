@@ -24,11 +24,6 @@ from torch_scatter import scatter_max
 from einops import rearrange
 from pointnet2.utils.pointnet2_utils import furthest_point_sample
 from math import log
-from dis_pu.layers import (
-    FeatureExtractor,
-    DuplicateUp,
-    CoordinateRegressor,
-    PointShuffle)
 
 def _cfg(url='', **kwargs):
     return {

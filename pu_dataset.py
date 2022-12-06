@@ -110,9 +110,8 @@ class PUGANDataset(data.Dataset):
 
 class xyz_Dataset_Whole(data.Dataset):
     def __init__(self, data_dir, n_input=2048, need_norm=True):
-        
         super().__init__()
-        
+
         self.raw_input_points = 8192
         self.n_input = n_input
         self.need_norm = need_norm
@@ -126,8 +125,8 @@ class xyz_Dataset_Whole(data.Dataset):
 
     def __getitem__(self, index):
         name = self.names[index]
-        gt_points = np.loadtxt(self.sample_path[index]) # (N, 3)
-        
+        gt_points = np.loadtxt(self.sample_path[index])  # (N, 3)
+
         ## Build the LR input
         choice = np.random.choice(gt_points.shape[0], self.n_input, replace=True)
         lr_points = gt_points[choice]
@@ -281,13 +280,14 @@ class PUGAN_Dataset(data.Dataset):
             input_data, gt_data = utils.shift_point_cloud_and_gt(input_data, gt_data, shift_range=0.1)
             radius_data = radius_data * scale
 
-            #for input aug
+            # for input aug
             if np.random.rand() > 0.5:
-               input_data = utils.jitter_perturbation_point_cloud(input_data, sigma=0.025, clip=0.05)
+                input_data = utils.jitter_perturbation_point_cloud(input_data, sigma=0.025, clip=0.05)
             if np.random.rand() > 0.5:
-               input_data = utils.rotate_perturbation_point_cloud(input_data, angle_sigma=0.03, angle_clip=0.09)
+                input_data = utils.rotate_perturbation_point_cloud(input_data, angle_sigma=0.03, angle_clip=0.09)
         else:
             raise NotImplementedError
+        # print('=================check the gt data: ',gt_data.min(),gt_data.max())
         return torch.FloatTensor(input_data), torch.FloatTensor(gt_data), torch.FloatTensor(radius_data)
 
 
@@ -324,6 +324,7 @@ class xyz_Dataset_Whole(data.Dataset):
 
         return points, normalized_points_GT, normalized_points_LR, furthest_dist, centroid, name
 
+
 class xyz_Pair_Dataset(data.Dataset):
     def __init__(self, lr_dir, gt_dir, n_input=2048):
         super().__init__()
@@ -334,7 +335,7 @@ class xyz_Pair_Dataset(data.Dataset):
         self.names = [x[:-4] for x in file_list]
         self.lr_sample_path = [os.path.join(lr_dir, x) for x in file_list]
         self.gt_sample_path = [os.path.join(gt_dir, x) for x in file_list]
-    
+
     def __len__(self):
         return len(self.names)
 
@@ -342,10 +343,10 @@ class xyz_Pair_Dataset(data.Dataset):
         name = self.names[index]
         # random_index = np.random.choice(np.linspace(0, self.raw_input_points, self.raw_input_points, endpoint=False),
         #                                 self.n_input).astype(np.int)
-        gt_points = np.loadtxt(self.gt_sample_path[index]).astype(np.float32)
+        gt_points = np.loadtxt(self.gt_sample_path[index])
 
-        centroid = np.mean(gt_points[:, :3], axis=0)
-        dist = np.linalg.norm(gt_points[:, :3] - centroid, axis=1)
+        centroid = np.mean(gt_points[:, 0:3], axis=0)
+        dist = np.linalg.norm(gt_points[:, 0:3] - centroid, axis=1)
         furthest_dist = np.max(dist)
         # print('###########', furthest_dist, furthest_dist.shape)
         # radius = furthest_dist[:, 0]

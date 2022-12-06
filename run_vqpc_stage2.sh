@@ -14,12 +14,12 @@ set -x
 
 torchrun --nproc_per_node=1 --master_port=$MASTER_PORT run_vqpc.py \
          --epochs 100 --lr 1e-3 --min_lr 1e-5 --warmup_epochs 0 \
-         --output_dir output/vqpc_stage2_PU1K_4096_codes \
-         --log_dir output/vqpc_stage2_PU1K_4096_codes/logs/ \
+         --output_dir output/vqpc_stage2_random_2048_codes_test \
+         --log_dir output/vqpc_stage2_random_2048_codes_test/logs/ \
          --model vqpc_stage2 --data_path ./data/train/pu1k_poisson_256_poisson_1024_pc_2500_patch50_addpugan.h5 \
          --batch_size 64 --num_workers 6 \
          --point_cloud_size 1024  \
          --save_ckpt_freq 10 --validation_freq 1 \
          --save_ckpt  --stage 'stage2' --disable_eval \
          --test_set_size 'PU1K_input_2048' --num_test_GT_points 8192 \
-#         --test --resume "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_stage2_random_2048_codes/best_hd.pth"
+         --test --resume "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_stage2_random_2048_codes/best_cd.pth"

@@ -534,7 +534,7 @@ class EMAVectorQuantizer(nn.Module):
         back = torch.gather(used[None, :][inds.shape[0] * [0], :], 1, inds)
         return back.reshape(ishape)
 
-    def forward(self, z):
+    def forward(self, z, z_e_x_GT, pretrained_GT=True):
         '''
         :param z: torch.Size([B, C, N])
         :return:
@@ -543,7 +543,7 @@ class EMAVectorQuantizer(nn.Module):
         # z, 'b c h w -> b h w c'
 
         # z = rearrange(z, 'b c h w -> b h w c')
-        z = rearrange(z, 'b c n -> b n c')
+        # z = rearrange(z, 'b c n -> b n c')
 
         z_flattened = z.reshape(-1, self.codebook_dim)
 
@@ -568,20 +568,27 @@ class EMAVectorQuantizer(nn.Module):
             self.embedding.embed_avg_ema_update(embed_sum)
             # normalize embed_avg and update weight
             self.embedding.weight_update(self.num_tokens)
-
-        # compute loss for embedding
-        loss = self.beta * F.mse_loss(z_q.detach(), z)
-
-        # preserve gradients
-        z_q = z + (z_q - z).detach()
+        if pretrained_GT:
+            # compute loss for embedding
+            z_q = z + (z_q - z).detach()
+            loss_zq = self.beta * F.mse_loss(z_q, z_e_x_GT)
+            loss_z = F.mse_loss(z, z_e_x_GT)
+        else:
+            loss = self.beta * F.mse_loss(z_q.detach(), z)
+        # if pretrained_GT:
+        #     # preserve gradients
+        #     z_q = z + (z_q - z).detach()  # -z_e_x_GT
+        # else:
+        #     z_q = z + (z_q - z).detach()
 
         # reshape back to match original input shape
         # z_q, 'b h w c -> b c h w'
-        z_q = rearrange(z_q, 'b n c -> b c n')
-        print(encoding_indices.unique())
-        return z_q, loss, (perplexity, encodings, encoding_indices)
+        # z_q = rearrange(z_q, 'b n c -> b c n')
+        print(len(encoding_indices.unique()))
+        return z_q, loss_z, loss_zq, (perplexity, encodings, encoding_indices)
 
     def get_codebook_entry(self, indices, shape):
+        # shape specifying (batch, height, width, channel)
         if self.remap is not None:
             indices = indices.reshape(shape[0], -1)  # add batch axis
             indices = self.unmap_to_all(indices)
@@ -590,10 +597,9 @@ class EMAVectorQuantizer(nn.Module):
         # get quantized latent vectors
         z_q = self.embedding(indices)
 
-        if shape is not None:
+        if shape is not None:  # B x C x N
             z_q = z_q.view(shape)
-            # reshape back to match original input shape
-            # z_q = z_q.permute(0, 3, 1, 2).contiguous()
-            z_q = z_q.permute(0, 2, 1).contiguous()
+            # # reshape back to match original input shape
+            # z_q = z_q.permute(0, 2, 1).contiguous()
 
         return z_q

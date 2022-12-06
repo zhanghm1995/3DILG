@@ -36,6 +36,7 @@ from PUCRN.PUCRN_new import CRNet
 from PointAttN_models.PointAttN import PCT_encoder, PCT_refine
 from quantize import EMAVectorQuantizer
 
+
 def _cfg(url='', **kwargs):
     return {
     }
@@ -573,7 +574,8 @@ class PUDecoder(nn.Module):
                                              init_values=0.,
                                              )
 
-        self.PCT_upsample = PointAttN_Decoder(latent_channel=latent_channel, up_ratio=up_ratio) #CRNet(up_ratio=4)  # self.CRNet_upsample 16 times
+        self.PCT_upsample = PointAttN_Decoder(latent_channel=latent_channel,
+                                              up_ratio=up_ratio)  # CRNet(up_ratio=4)  # self.CRNet_upsample 16 times
 
     def forward(self, latents, centers):
         '''
@@ -590,6 +592,7 @@ class PUDecoder(nn.Module):
         latents = latents.permute(0, 2, 1).contiguous()  # torch.Size([B, channel, num_points])
         pred = self.PCT_upsample(latents, centers, )
         return pred
+
 
 class PointAttN_Decoder(nn.Module):
     def __init__(self, latent_channel=192, up_ratio=4):
@@ -630,19 +633,19 @@ class PointAttN_Decoder(nn.Module):
 
     def forward(self, latents, centers):
         '''
-        latents: FPS points quantized features
-        centers: FPS points coordinates
+        latents: FPS points quantized features [B, N, C]
+        centers: FPS points coordinates [B, N, 3]
         '''
         # kernel average
-        # samples: B x N x 3
         # latents: B x T x 320
         # centers: B x T x 3
         embeddings = embed(centers, self.basis)
-        embeddings = self.embed(torch.cat([centers, embeddings], dim=2))
+        embeddings = self.embed(torch.cat([centers, embeddings], dim=2))  # torch.Size([B, num_points, channel])
         latents = self.transformer(latents, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
         latents = latents.permute(0, 2, 1).contiguous()  # torch.Size([B, channel, num_points])
         pred = self.upsample(latents, centers, embeddings.permute(0, 2, 1).contiguous())
         return pred
+
 
 class PointConv(torch.nn.Module):
     def __init__(self, local_nn=None, global_nn=None):
@@ -709,7 +712,7 @@ class Encoder(nn.Module):
                                              )
 
         self.M = M
-        self.ratio = 1 / down_ratio #N / M #/ 2
+        self.ratio = 1 / down_ratio  # N / M #/ 2
         self.k = num_neighbors
 
     def forward(self, pc, fps_sample=False):
@@ -939,10 +942,12 @@ class Autoencoder(nn.Module):
 
 
 class PUAutoencoder(nn.Module):
-    def __init__(self, N, K=1024, dim=256, M=1024, num_neighbors=32, **kwargs):
+    def __init__(self, N, K=1024, dim=256, M=1024, num_neighbors=32, path=None, **kwargs):
         super().__init__()
 
         self.encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors, down_ratio=4)
+        self.pretrained_encoder = Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors, down_ratio=4)
+
         # self.encoder = PCT_encoder()
         # self.decoder = PUDecoder(latent_channel=dim)
         self.decoder = PointAttN_Decoder(latent_channel=dim, up_ratio=4)
@@ -953,21 +958,56 @@ class PUAutoencoder(nn.Module):
         self.N = N
         self.patch_num_ratio = 3
 
+        self.init_from_ckpt(path=path, fix_weights=True)
+
+    def init_from_ckpt(self, path, fix_weights=True):
+        stage1_weights = torch.load(path, map_location="cpu")["model"]
+        encoder_state_dict = {}
+        decoder_state_dict = {}
+        for k, v in stage1_weights.items():
+            if 'encoder' in k:
+                k = k.split('encoder.')[-1]
+                encoder_state_dict[k] = v
+            elif 'decoder' in k:
+                k = k.split('decoder.')[-1]
+                decoder_state_dict[k] = v
+        self.encoder.load_state_dict(encoder_state_dict)
+
+        self.pretrained_encoder.load_state_dict(encoder_state_dict)  # fix
+        self.decoder.load_state_dict(decoder_state_dict)  # fix
+
+        if fix_weights:
+            for param in self.pretrained_encoder.parameters():
+                param.requires_grad = False
+            # for param in self.decoder.parameters():
+            #     param.requires_grad = False
+        print(f"Load pretrained codebook and decoder from {path}. And fixed their weights")
+
     @torch.jit.ignore
     def no_weight_decay(self):
         return {}
 
+    # def encode_wo_VQ(self, x, bins=256):
+    #     B, _, _ = x.shape
+    #     # with torch.no_grad():
+    #     z_e_x_GT, centers = self.pretrained_encoder(x)  # B x N x C, B x N x 3
+    #     # z_e_x_GT.requires_grad_(True)
+    #     # centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
+    #
+    #     return z_e_x_GT
+
     def encode(self, x, bins=256):
         B, _, _ = x.shape
-
-        z_e_x, centers = self.encoder(x)  # self.encoder(x)  # B x T x C, B x T x 3
-        # print('feature range: ', torch.min(z_e_x), torch.max(z_e_x))
+        z_e_x_GT, _ = self.pretrained_encoder(x)  # fix weights
+        # z_e_x_GT.requires_grad_()
+        z_e_x, centers = self.encoder(x)  # self.encoder(x)  # B x N x C, B x N x 3
 
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 
-        z_q_x_st, loss_vq, info = self.codebook(z_e_x)
+        z_q_x_st, loss_z, loss_zq, info = self.codebook(z_e_x, z_e_x_GT)  # B x N x C
+        # print('==============After VQ:', z_q_x_st.size())
         perplexity, encodings, encoding_indices = info
-        return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
+        return z_e_x, z_q_x_st, centers_quantized, loss_z, loss_zq, perplexity, encodings
 
     def pc_prediction(self, points):
         '''
@@ -1002,7 +1042,7 @@ class PUAutoencoder(nn.Module):
 
             normalized_patch = points_mean / furthest_distance
 
-            up_point, _ = self(normalized_patch)  # up_point: (B, N, 3)
+            up_point = self(normalized_patch)  # up_point: (B, N, 3) ,_
             ## UnNormalize
             up_point = up_point * furthest_distance + centroid
 
@@ -1013,20 +1053,22 @@ class PUAutoencoder(nn.Module):
         return input_list, result
 
     def forward(self, x):
-        z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)
+        z_e_x, z_q_x_st, centers_quantized, loss_z, loss_zq, perplexity, encodings = self.encode(x)
+        if self.training:
+            return loss_z, loss_zq
+        else:
+            centers = centers_quantized.float() / 255.0 * 2 - 1
+            pred = self.decoder(z_q_x_st, centers)
+            return pred  # , loss_z, loss_vq
+
+    def forward_wo_VQ(self, x):
+        z_e_x, centers_quantized = self.encode_wo_VQ(x)
 
         centers = centers_quantized.float() / 255.0 * 2 - 1
 
-        z_q_x = z_q_x_st
+        pred = self.decoder(z_e_x, centers)
 
-        if self.training:
-            pred = self.decoder(z_q_x_st, centers)
-            # print(pred.size())
-            return pred, z_e_x, z_q_x, loss_vq, perplexity
-        else:
-            pred = self.decoder(z_q_x_st, centers)
-
-            return pred, loss_vq
+        return pred
 
 
 def calc_mean_std(feat, eps=1e-5):
@@ -1071,11 +1113,12 @@ class VQPC_stage2(nn.Module):
     def __init__(self, N=256, K=1024, dim=256, M=1024, num_neighbors=32, path=None, **kwargs):
         super().__init__()
         # self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)
-        self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M, num_neighbors=num_neighbors)  # sparse->feature->predict code index
+        self.Stage2Encoder = Stage2Encoder(N=N, dim=dim, M=M,
+                                           num_neighbors=num_neighbors)  # sparse->feature->predict code index
 
-        self.decoder = PointAttN_Decoder(latent_channel=dim, up_ratio=4) #PUDecoder(latent_channel=dim, up_ratio=4)
+        self.decoder = PointAttN_Decoder(latent_channel=dim, up_ratio=4)  # PUDecoder(latent_channel=dim, up_ratio=4)
 
-        self.codebook = EMAVectorQuantizer(K, dim, beta=0.25)  #VectorQuantizer2(K, dim)
+        self.codebook = EMAVectorQuantizer(K, dim, beta=0.25)  # VectorQuantizer2(K, dim)
 
         self.M = M
         self.N = N
@@ -1099,6 +1142,7 @@ class VQPC_stage2(nn.Module):
             nn.Linear(self.dim_embd, K, bias=False))
 
         self.init_from_ckpt(path=path, fix_weights=True)
+        self.beta = 0.25
 
     def init_from_ckpt(self, path, fix_weights=True):
         stage1_weights = torch.load(path, map_location="cpu")["model"]
@@ -1131,10 +1175,10 @@ class VQPC_stage2(nn.Module):
     def no_weight_decay(self):
         return {}
 
-    def Stage2Encode(self, x, bins=256, generate_index='predict'):
+    def Stage2Encode(self, x, bins=256, generate_index='neareatneighbor'):
         B, _, _ = x.shape
 
-        downsampled_feature, centers = self.Stage2Encoder(x)  # B x C x N, B x N x 3
+        lr_feature, centers = self.Stage2Encoder(x)  # B x N x C, B x N x 3
 
         # # ################# Transformer ###################
         # # quant_feat, codebook_loss, quant_stats = self.quantize(lq_feat)
@@ -1150,41 +1194,66 @@ class VQPC_stage2(nn.Module):
         # logits = self.idx_pred_layer(query_emb)  # (hw)bn
         if generate_index == 'predict':
             # z_e_x = rearrange(fps_feature, 'B C N -> (B N) C').contiguous()  # z_e_x: torch.Size([32*256, 256])
-            z_e_x = rearrange(downsampled_feature, 'B C N -> B N C').contiguous()  # z_e_x: torch.Size([32*256, 256])
+            # print('====================', downsampled_feature.size())
+            # downsampled_feature = rearrange(lr_feature, 'B N C -> B C N')
+            z_e_x = rearrange(lr_feature, 'B N C-> (B C) N').contiguous()  # z_e_x: torch.Size([32*256, 256])
+            # z_e_x = rearrange(downsampled_feature, 'B C N -> B N C').contiguous()  # z_e_x: torch.Size([32*256, 256])
 
             logits = self.idx_pred_layer(z_e_x)  # NBC    logits: torch.Size([32*256, 1024])
             # logits = logits.permute(1, 0, 2)  # (hw)bn -> b(hw)n
-            soft_one_hot = F.softmax(logits, dim=2)
+            soft_one_hot = F.softmax(logits, dim=1)
+            soft_one_hot = rearrange(soft_one_hot, '(B C) N -> B C N', B=B).contiguous()
+
             # soft_one_hot = F.softmax(logits, dim=1)
             if self.training:
                 quant_feat = torch.einsum('btn,nc->btc', [soft_one_hot, self.codebook.embedding.weight])
                 # b(hw)c -> bc(hw) -> bchw
-                quant_feat = quant_feat.permute(0, 2, 1).view(downsampled_feature.shape)
+                # quant_feat = quant_feat.permute(0, 2, 1).view(downsampled_feature.shape)
+                quant_feat = quant_feat.permute(0, 2, 1).view(lr_feature.shape)
+                # compute loss for embedding
+                loss_vq = self.beta * F.mse_loss(quant_feat.detach(), lr_feature)
+                # preserve gradients
+                quant_feat = lr_feature + (quant_feat - lr_feature).detach()
+
             else:
                 _, top_idx = torch.topk(soft_one_hot, 1, dim=2)
                 quant_feat = self.codebook.get_codebook_entry(top_idx,
-                                                              shape=downsampled_feature.shape)  # [x.shape[0], 16, 16, 256]
+                                                              shape=lr_feature.shape)  # [x.shape[0], 16, 16, 256]
 
-            quant_feat = adaptive_instance_normalization(quant_feat, downsampled_feature)
+            quant_feat = adaptive_instance_normalization(quant_feat, lr_feature)  # [B, N, C]
 
         elif generate_index == 'neareatneighbor':
-            # z = rearrange(z, 'b c N-> b N c').contiguous()
-            z_flattened = rearrange(downsampled_feature, 'B C N -> (B N) C').contiguous()
-            # z_flattened = rearrange(fps_feature, 'B N C -> (B N) C').contiguous()
-            # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
+            z_q, loss_vq, info = self.codebook(lr_feature)
+            # perplexity, encodings, encoding_indices = info
+            centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
+            return z_q, centers_quantized, loss_vq
 
-            d = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
-                torch.sum(self.codebook.embedding.weight ** 2, dim=1) - 2 * \
-                torch.einsum('bd,dn->bn', z_flattened, rearrange(self.codebook.embedding.weight, 'n d -> d n'))
-
-            min_encoding_indices = torch.argmin(d, dim=1)
-            quant_feat = self.codebook.embedding(min_encoding_indices).view(downsampled_feature.shape)
-            quant_feat = downsampled_feature + (quant_feat - downsampled_feature).detach()
-
-        centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
-
-        # z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
-        return quant_feat, centers_quantized  # , loss_vq, perplexity, encodings
+        #
+        #     # z = rearrange(z, 'b c N-> b N c').contiguous()
+        #     z_flattened = rearrange(lr_feature, 'B C N -> (B N) C').contiguous()
+        #     # z_flattened = rearrange(fps_feature, 'B N C -> (B N) C').contiguous()
+        #     # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
+        #
+        #     d = z_flattened.pow(2).sum(dim=1, keepdim=True) + \
+        #         self.embedding.weight.pow(2).sum(dim=1) - 2 * \
+        #         torch.einsum('bd,nd->bn', z_flattened, self.embedding.weight)  # 'n d -> d n'
+        #     encoding_indices = torch.argmin(d, dim=1)
+        #     z_q = self.embedding(encoding_indices).view(lr_feature.shape)
+        #     encodings = F.one_hot(encoding_indices, self.num_tokens).type(lr_feature.dtype)
+        #
+        #
+        #
+        #     min_encoding_indices = torch.argmin(d, dim=1)
+        #     quant_feat = self.codebook.embedding(min_encoding_indices).view(downsampled_feature.shape)
+        #     quant_feat = downsampled_feature + (quant_feat - downsampled_feature).detach()
+        #
+        # centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
+        #
+        # # z_q_x_st, loss_vq, perplexity, encodings = self.codebook(z_e_x)
+        # if self.training:
+        #     return quant_feat, centers_quantized, loss_vq  # , loss_vq, perplexity, encodings
+        # else:
+        #     return quant_feat, centers_quantized
 
     def pc_prediction(self, points, stage='stage1'):
         '''
@@ -1226,7 +1295,7 @@ class VQPC_stage2(nn.Module):
 
             normalized_patch = points_mean / furthest_distance
 
-            up_point = self(normalized_patch)  # up_point: (B, N, 3)
+            up_point, _ = self(normalized_patch)  # up_point: (B, N, 3)
             ## UnNormalize
             up_point = up_point * furthest_distance + centroid
 
@@ -1237,12 +1306,13 @@ class VQPC_stage2(nn.Module):
         return input_list, result
 
     def forward(self, x):
-        quant_feat, centers_quantized = self.Stage2Encode(x)
+        quant_feat, centers_quantized, loss_vq = self.Stage2Encode(x)
 
         centers = centers_quantized.float() / 255.0 * 2 - 1
 
         pred = self.decoder(quant_feat, centers)
-        return pred
+
+        return pred, loss_vq
 
 
 class VQPC_stage2_without_VQ(nn.Module):
@@ -1384,23 +1454,27 @@ def vqvae_512_1024_2048(pretrained=False, **kwargs):
 
 
 @register_model
-def vqpc_256_1024_1024(pretrained=False, **kwargs):
+def vqpc_256_1024_1024(pretrained=True, **kwargs):
     model = PUAutoencoder(
         N=256,
-        K=1024,  # try 2048, 4096
+        K=4096,  # try 2048, 4096
         M=1024,
+        path="/mntnfs/cui_data4/yanchengwang/3DILG/output/stage1_random_4_pe_without_VQ_offset_vq_loss_1_pretraining/best_cd.pth",
         **kwargs)
     model.default_cfg = _cfg()
-    # pretrained_path = "/mntnfs/cui_data4/yanchengwang/3DILG/output/vqpc_s1_4x_PUGAN_permute_channel/best_cd.pth"
-    if pretrained:
-        checkpoint = torch.load(
-            kwargs["init_ckpt"], map_location="cpu"
-        )
-        # checkpoint = torch.load(
-        #     pretrained_path, map_location="cpu"
-        # )
-        model.load_state_dict(checkpoint["model"])
-        # print('==========load pretrained stage1 model from vqpc_s1_4x_PUGAN_permute_channel!============')
+    # if pretrained:
+    #     checkpoint = torch.load(
+    #         kwargs["init_ckpt"], map_location="cpu"
+    #     )
+    #     model.load_state_dict(checkpoint["model"])
+    # if pretrained:
+    #     checkpoint = torch.load(
+    #         kwargs["init_ckpt"], map_location="cpu"
+    #     )
+    # checkpoint = torch.load("/mntnfs/cui_data4/yanchengwang/3DILG/output/stage1_random_4_pe_without_VQ_offset_vq_loss_1_pretraining/best_cd.pth", map_location="cpu")["model"]
+    # model.load_state_dict(checkpoint, strict=False)
+    # print(
+    #     '==========load pretrained stage1 model from stage1_random_4_pe_without_VQ_offset_vq_loss_1_pretraining!============')
     return model
 
 
