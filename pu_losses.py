@@ -11,9 +11,9 @@ import torch
 
 from chamfer_distance import chamfer_distance as chamfer_dist
 from knn_cuda import KNN
-
 from auction_match import auction_match
 from pointnet2.utils import pointnet2_utils as pn2_utils
+
 from pointnet2.utils.utils import knn_point
 import math
 

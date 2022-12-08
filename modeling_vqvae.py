@@ -34,7 +34,7 @@ from vis_util import save_xyz_file
 from typing import Optional, List
 from PUCRN.PUCRN_new import CRNet
 from PointAttN_models.PointAttN import PCT_encoder, PCT_refine
-from quantize import EMAVectorQuantizer
+from quantize import EMAVectorQuantizer, ori_EMAVectorQuantizer
 
 
 def _cfg(url='', **kwargs):
@@ -647,6 +647,60 @@ class PointAttN_Decoder(nn.Module):
         return pred
 
 
+class Prediction_Head(nn.Module):
+    def __init__(self, latent_channel=256):
+        super().__init__()
+
+        self.fc = Embedding(latent_channel=latent_channel)
+        self.log_sigma = nn.Parameter(torch.FloatTensor([3.0]))
+        # self.register_buffer('log_sigma', torch.Tensor([-3.0]))
+
+        self.embed = Seq(Lin(48 + 3, latent_channel))  # , nn.GELU(), Lin(128, 128))
+
+        self.embedding_dim = 48
+        e = torch.pow(2, torch.arange(self.embedding_dim // 6)).float() * np.pi
+        e = torch.stack([
+            torch.cat([e, torch.zeros(self.embedding_dim // 6),
+                       torch.zeros(self.embedding_dim // 6)]),
+            torch.cat([torch.zeros(self.embedding_dim // 6), e,
+                       torch.zeros(self.embedding_dim // 6)]),
+            torch.cat([torch.zeros(self.embedding_dim // 6),
+                       torch.zeros(self.embedding_dim // 6), e]),
+        ])
+        self.register_buffer('basis', e)  # 3 x 16
+
+        self.transformer = VisionTransformer(embed_dim=latent_channel,
+                                             depth=6,
+                                             num_heads=6,
+                                             mlp_ratio=4.,
+                                             qkv_bias=True,
+                                             qk_scale=None,
+                                             drop_rate=0.,
+                                             attn_drop_rate=0.,
+                                             drop_path_rate=0.1,
+                                             norm_layer=partial(nn.LayerNorm, eps=1e-6),
+                                             init_values=0.,
+                                             )
+        self.K = 1024
+        self.idx_pred_layer = nn.Sequential(
+            nn.LayerNorm(latent_channel),
+            nn.Linear(latent_channel, self.K, bias=False))
+
+    def forward(self, lr_feature, centers):
+        '''
+        lr_feature: random points encoder features [B, N, C]
+        '''
+        embeddings = embed(centers, self.basis)
+        embeddings = self.embed(torch.cat([centers, embeddings], dim=2))  # torch.Size([B, num_points, channel])
+        lr_feature = self.transformer(lr_feature, embeddings)  # (B, M, 256) #torch.Size([B, num_points, channel])
+        z_e_x = rearrange(lr_feature, 'B N C-> (B N) C').contiguous()
+        logits = self.idx_pred_layer(z_e_x)  # NBC    logits: torch.Size([32*256, 1024])
+        # logits = logits.permute(1, 0, 2)  # (hw)bn -> b(hw)n
+        soft_one_hot = F.softmax(logits, dim=1)
+        # soft_one_hot = rearrange(soft_one_hot, '(B N) C -> B C N', B=B).contiguous()
+        return soft_one_hot
+
+
 class PointConv(torch.nn.Module):
     def __init__(self, local_nn=None, global_nn=None):
         super(PointConv, self).__init__()
@@ -715,7 +769,7 @@ class Encoder(nn.Module):
         self.ratio = 1 / down_ratio  # N / M #/ 2
         self.k = num_neighbors
 
-    def forward(self, pc, fps_sample=False):
+    def forward(self, pc, fps_sample=False, index=None):
         # pc: B x N x D
         B, N, D = pc.shape
         assert N == self.M
@@ -726,16 +780,19 @@ class Encoder(nn.Module):
         batch = torch.repeat_interleave(batch, N)
 
         pos = flattened
-        if fps_sample:
-            idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
+        if index is None:
+            if fps_sample:
+                idx = fps(pos, batch, ratio=self.ratio)  # 0.0625
+            else:
+                num_needed = int(N * self.ratio)
+                idx = pos.new_zeros((B, num_needed), dtype=torch.long)
+                for i in range(B):
+                    count = i * N
+                    m_idx = torch.randperm(N, device=pc.device)[:num_needed]
+                    idx[i] = count + m_idx
+                idx = idx.view(-1)
         else:
-            num_needed = int(N * self.ratio)
-            idx = pos.new_zeros((B, num_needed), dtype=torch.long)
-            for i in range(B):
-                count = i * N
-                m_idx = torch.randperm(N, device=pc.device)[:num_needed]
-                idx[i] = count + m_idx
-            idx = idx.view(-1)
+            idx = index
 
         row, col = knn(pos, pos[idx], self.k, batch, batch[idx])
         edge_index = torch.stack([col, row], dim=0)
@@ -752,8 +809,10 @@ class Encoder(nn.Module):
         embeddings = self.embed(torch.cat([pos, embeddings], dim=2))  # 3 + 48 -> 256
 
         out = self.transformer(x, embeddings)
-
-        return out, pos
+        if index is None:
+            return out, pos, idx
+        else:
+            return out, pos
 
 
 class Stage2Encoder(nn.Module):
@@ -954,9 +1013,19 @@ class PUAutoencoder(nn.Module):
 
         # self.codebook = VectorQuantizer2(K, dim)
         self.codebook = EMAVectorQuantizer(K, dim, beta=0.25)
+        # self.predition_head = Prediction_Head(latent_channel=dim)
+        # self.idx_pred_layer = nn.Sequential(
+        #     nn.LayerNorm(dim),
+        #     # nn.Linear(dim, dim*2, bias=False),
+        #     # nn.LayerNorm(dim*2),
+        #     # nn.Linear(dim*2, dim, bias=False),
+        #     # nn.LayerNorm(dim),
+        #     nn.Linear(dim, K, bias=False))
+
         self.M = M
         self.N = N
         self.patch_num_ratio = 3
+        self.beta = 0.25
 
         self.init_from_ckpt(path=path, fix_weights=True)
 
@@ -971,16 +1040,18 @@ class PUAutoencoder(nn.Module):
             elif 'decoder' in k:
                 k = k.split('decoder.')[-1]
                 decoder_state_dict[k] = v
-        self.encoder.load_state_dict(encoder_state_dict)
+        # self.encoder.load_state_dict(encoder_state_dict)
 
         self.pretrained_encoder.load_state_dict(encoder_state_dict)  # fix
         self.decoder.load_state_dict(decoder_state_dict)  # fix
 
         if fix_weights:
+            # for param in self.encoder.parameters():
+            #     param.requires_grad = False
             for param in self.pretrained_encoder.parameters():
                 param.requires_grad = False
-            # for param in self.decoder.parameters():
-            #     param.requires_grad = False
+            for param in self.decoder.parameters():
+                param.requires_grad = False
         print(f"Load pretrained codebook and decoder from {path}. And fixed their weights")
 
     @torch.jit.ignore
@@ -998,16 +1069,62 @@ class PUAutoencoder(nn.Module):
 
     def encode(self, x, bins=256):
         B, _, _ = x.shape
-        z_e_x_GT, _ = self.pretrained_encoder(x)  # fix weights
+        z_e_x_GT, centers, index = self.pretrained_encoder(x, index=None)  # fix weights
         # z_e_x_GT.requires_grad_()
-        z_e_x, centers = self.encoder(x)  # self.encoder(x)  # B x N x C, B x N x 3
+        z_e_x, _ = self.encoder(x, index=index)  # self.encoder(x)  # B x N x C, B x N x 3
 
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 
-        z_q_x_st, loss_z, loss_zq, info = self.codebook(z_e_x, z_e_x_GT)  # B x N x C
+        z_q_x_st, loss_vq, info = self.codebook(z_e_x, z_e_x_GT)  # B x N x C
         # print('==============After VQ:', z_q_x_st.size())
         perplexity, encodings, encoding_indices = info
-        return z_e_x, z_q_x_st, centers_quantized, loss_z, loss_zq, perplexity, encodings
+        return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
+
+    def encode_new(self, x, bins=256):
+        B, _, _ = x.shape
+
+        lr_feature, centers = self.encoder(x)  # self.encoder(x)  # B x N x C, B x N x 3
+
+        centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
+        soft_one_hot = self.predition_head(lr_feature, centers)
+
+        if self.training:
+            min_encoding_indices = torch.argmax(soft_one_hot, dim=1)
+            # print(len(torch.unique(min_encoding_indices)))
+            z_q = self.codebook.embedding(min_encoding_indices).view(lr_feature.shape)
+
+            # compute loss for embedding
+
+            loss_vq = self.beta * torch.mean((z_q.detach() - lr_feature) ** 2) + \
+                      torch.mean((z_q - lr_feature.detach()) ** 2)
+
+            # print(torch.mean(z_q**2), torch.mean(z**2))
+
+            # preserve gradients
+            z_q = lr_feature + (z_q - lr_feature).detach()
+
+            # quant_feat = torch.einsum('btn,nc->btc', [soft_one_hot, self.codebook.embedding.weight])
+            # # b(hw)c -> bc(hw) -> bchw
+            # # quant_feat = quant_feat.permute(0, 2, 1).view(downsampled_feature.shape)
+            # quant_feat = quant_feat.permute(0, 2, 1).view(lr_feature.shape)
+            # # compute loss for embedding
+            # loss_vq = self.beta * F.mse_loss(quant_feat.detach(), lr_feature)
+            # # preserve gradients
+            # quant_feat = lr_feature + (quant_feat - lr_feature).detach()
+        else:
+            _, top_idx = torch.topk(soft_one_hot, 1, dim=1)
+            z_q = self.codebook.get_codebook_entry(top_idx,
+                                                   shape=lr_feature.shape)  # [x.shape[0], 16, 16, 256]
+
+        z_q = adaptive_instance_normalization(z_q, lr_feature)  # [B, N, C]
+
+        # z_q_x_st, loss_vq, info = self.codebook(quant_feat)  # B x N x C
+        # print('==============After VQ:', z_q_x_st.size())
+        # perplexity, encodings, encoding_indices = info
+        if self.training:
+            return lr_feature, z_q, centers_quantized, loss_vq  # , perplexity, encodings
+        else:
+            return lr_feature, z_q, centers_quantized
 
     def pc_prediction(self, points):
         '''
@@ -1053,9 +1170,9 @@ class PUAutoencoder(nn.Module):
         return input_list, result
 
     def forward(self, x):
-        z_e_x, z_q_x_st, centers_quantized, loss_z, loss_zq, perplexity, encodings = self.encode(x)
+        z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)
         if self.training:
-            return loss_z, loss_zq
+            return loss_vq
         else:
             centers = centers_quantized.float() / 255.0 * 2 - 1
             pred = self.decoder(z_q_x_st, centers)
@@ -1457,7 +1574,7 @@ def vqvae_512_1024_2048(pretrained=False, **kwargs):
 def vqpc_256_1024_1024(pretrained=True, **kwargs):
     model = PUAutoencoder(
         N=256,
-        K=4096,  # try 2048, 4096
+        K=2048,  # try 2048, 4096
         M=1024,
         path="/mntnfs/cui_data4/yanchengwang/3DILG/output/stage1_random_4_pe_without_VQ_offset_vq_loss_1_pretraining/best_cd.pth",
         **kwargs)

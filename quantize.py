@@ -457,7 +457,6 @@ class VectorQuantizer_PointCloud(nn.Module):
         return z_q
 
 
-
 class EmbeddingEMA(nn.Module):
     def __init__(self, num_tokens, codebook_dim, decay=0.99, eps=1e-5):
         super().__init__()
@@ -492,8 +491,8 @@ class EMAVectorQuantizer(nn.Module):
     def __init__(self, n_embed, embedding_dim, beta, decay=0.99, eps=1e-5,
                  remap=None, unknown_index="random"):
         super().__init__()
-        self.codebook_dim = embedding_dim #codebook_dim
-        self.num_tokens = n_embed #num_tokens
+        self.codebook_dim = embedding_dim  # codebook_dim
+        self.num_tokens = n_embed  # num_tokens
         self.beta = beta
         self.embedding = EmbeddingEMA(self.num_tokens, self.codebook_dim, decay, eps)
 
@@ -570,22 +569,142 @@ class EMAVectorQuantizer(nn.Module):
             self.embedding.weight_update(self.num_tokens)
         if pretrained_GT:
             # compute loss for embedding
-            z_q = z + (z_q - z).detach()
-            loss_zq = self.beta * F.mse_loss(z_q, z_e_x_GT)
-            loss_z = F.mse_loss(z, z_e_x_GT)
+            loss1 = self.beta*torch.mean((z_q.detach() - z) ** 2) # 0.25
+            loss2 = torch.mean((z_q - z.detach()) ** 2)
+            loss3 = 0.02*torch.mean((z - z_e_x_GT) ** 2)
+            # print(loss1, loss2, loss3)
+            loss_vq = loss1 + loss2 + loss3
+            # loss_vq = self.beta * torch.mean((z_q.detach() - z) ** 2) + \
+            #           torch.mean((z_q - z.detach()) ** 2) + \
+            #           self.beta * torch.mean((z - z_e_x_GT) ** 2)
+
+            # loss_vq = F.mse_loss(z_q.detach(), z) + self.beta * F.mse_loss(z, z_e_x_GT)
+            # loss_zq = F.mse_loss(z_q, z_e_x_GT) #self.beta *
+            # loss_z = F.mse_loss(z, z_e_x_GT)
         else:
             loss = self.beta * F.mse_loss(z_q.detach(), z)
-        # if pretrained_GT:
-        #     # preserve gradients
-        #     z_q = z + (z_q - z).detach()  # -z_e_x_GT
-        # else:
-        #     z_q = z + (z_q - z).detach()
+        if pretrained_GT:
+            # preserve gradients
+            z_q = z + (z_q - z).detach()  # -z_e_x_GT
+        else:
+            z_q = z + (z_q - z).detach()
+
+        # reshape back to match original input shape
+        # z_q, 'b h w c -> b c h w'
+        # z_q = rearrange(z_q, 'b n c -> b c n')
+        # print(len(encoding_indices.unique()))
+        return z_q, loss_vq, (perplexity, encodings, encoding_indices)
+
+    def get_codebook_entry(self, indices, shape):
+        # shape specifying (batch, height, width, channel)
+        if self.remap is not None:
+            indices = indices.reshape(shape[0], -1)  # add batch axis
+            indices = self.unmap_to_all(indices)
+            indices = indices.reshape(-1)  # flatten again
+
+        # get quantized latent vectors
+        z_q = self.embedding(indices)
+
+        if shape is not None:  # B x C x N
+            z_q = z_q.view(shape)
+            # # reshape back to match original input shape
+            # z_q = z_q.permute(0, 2, 1).contiguous()
+
+        return z_q
+
+
+class ori_EMAVectorQuantizer(nn.Module):
+    def __init__(self, n_embed, embedding_dim, beta, decay=0.99, eps=1e-5,
+                 remap=None, unknown_index="random"):
+        super().__init__()
+        self.codebook_dim = embedding_dim  # codebook_dim
+        self.num_tokens = n_embed  # num_tokens
+        self.beta = beta
+        self.embedding = EmbeddingEMA(self.num_tokens, self.codebook_dim, decay, eps)
+
+        self.remap = remap
+        if self.remap is not None:
+            self.register_buffer("used", torch.tensor(np.load(self.remap)))
+            self.re_embed = self.used.shape[0]
+            self.unknown_index = unknown_index  # "random" or "extra" or integer
+            if self.unknown_index == "extra":
+                self.unknown_index = self.re_embed
+                self.re_embed = self.re_embed + 1
+            print(f"Remapping {self.n_embed} indices to {self.re_embed} indices. "
+                  f"Using {self.unknown_index} for unknown indices.")
+        else:
+            self.re_embed = n_embed
+
+    def remap_to_used(self, inds):
+        ishape = inds.shape
+        assert len(ishape) > 1
+        inds = inds.reshape(ishape[0], -1)
+        used = self.used.to(inds)
+        match = (inds[:, :, None] == used[None, None, ...]).long()
+        new = match.argmax(-1)
+        unknown = match.sum(2) < 1
+        if self.unknown_index == "random":
+            new[unknown] = torch.randint(0, self.re_embed, size=new[unknown].shape).to(device=new.device)
+        else:
+            new[unknown] = self.unknown_index
+        return new.reshape(ishape)
+
+    def unmap_to_all(self, inds):
+        ishape = inds.shape
+        assert len(ishape) > 1
+        inds = inds.reshape(ishape[0], -1)
+        used = self.used.to(inds)
+        if self.re_embed > self.used.shape[0]:  # extra token
+            inds[inds >= self.used.shape[0]] = 0  # simply set to zero
+        back = torch.gather(used[None, :][inds.shape[0] * [0], :], 1, inds)
+        return back.reshape(ishape)
+
+    def forward(self, z, pretrained_GT=True):
+        '''
+        :param z: torch.Size([B, C, N])
+        :return:
+        '''
+        # reshape z -> (batch, height, width, channel) and flatten
+        # z, 'b c h w -> b h w c'
+
+        # z = rearrange(z, 'b c h w -> b h w c')
+        # z = rearrange(z, 'b c n -> b n c')
+
+        z_flattened = z.reshape(-1, self.codebook_dim)
+
+        # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
+        d = z_flattened.pow(2).sum(dim=1, keepdim=True) + \
+            self.embedding.weight.pow(2).sum(dim=1) - 2 * \
+            torch.einsum('bd,nd->bn', z_flattened, self.embedding.weight)  # 'n d -> d n'
+
+        encoding_indices = torch.argmin(d, dim=1)
+
+        z_q = self.embedding(encoding_indices).view(z.shape)
+        encodings = F.one_hot(encoding_indices, self.num_tokens).type(z.dtype)
+        avg_probs = torch.mean(encodings, dim=0)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+
+        if self.training and self.embedding.update:
+            # EMA cluster size
+            encodings_sum = encodings.sum(0)
+            self.embedding.cluster_size_ema_update(encodings_sum)
+            # EMA embedding average
+            embed_sum = encodings.transpose(0, 1) @ z_flattened
+            self.embedding.embed_avg_ema_update(embed_sum)
+            # normalize embed_avg and update weight
+            self.embedding.weight_update(self.num_tokens)
+
+        # compute loss for embedding
+        loss = self.beta * F.mse_loss(z_q.detach(), z)
+
+        # preserve gradients
+        z_q = z + (z_q - z).detach()
 
         # reshape back to match original input shape
         # z_q, 'b h w c -> b c h w'
         # z_q = rearrange(z_q, 'b n c -> b c n')
         print(len(encoding_indices.unique()))
-        return z_q, loss_z, loss_zq, (perplexity, encodings, encoding_indices)
+        return z_q, loss, (perplexity, encodings, encoding_indices)
 
     def get_codebook_entry(self, indices, shape):
         # shape specifying (batch, height, width, channel)

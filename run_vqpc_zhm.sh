@@ -1,22 +1,21 @@
 #!/bin/bash
-#SBATCH -J S1_GT
+#SBATCH -J S1_index
 #SBATCH -p p-A100
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=6
 #SBATCH --gres=gpu:1
-#SBATCH -w pgpu16
-#SBATCH -o /mntnfs/cui_data4/yanchengwang/3DILG/output/stage1_random_4_pe_EMA_VQ_use_pretrained_feature_as_GT_4096_codes_add_loss_z/%j.out
-#SBATCH -e /mntnfs/cui_data4/yanchengwang/3DILG/output/stage1_random_4_pe_EMA_VQ_use_pretrained_feature_as_GT_4096_codes_add_loss_z/%j.out
+#SBATCH -o /mntnfs/cui_data4/yanchengwang/3DILG/output/stage1_random_4_pe_EMA_VQ_use_pretrained_feature_as_GT_2048_codes_same_sample_index/%j.out
+#SBATCH -e /mntnfs/cui_data4/yanchengwang/3DILG/output/stage1_random_4_pe_EMA_VQ_use_pretrained_feature_as_GT_2048_codes_same_sample_index/%j.out
 
 
 export MASTER_PORT=$((12000 + $RANDOM % 20000))
 set -x
 
 torchrun --nproc_per_node=1 --master_port=$MASTER_PORT run_vqpc.py \
-         --epochs 100 --lr 1e-4 --min_lr 1e-6 --warmup_epochs 0 \
-         --output_dir output/stage1_random_4_pe_EMA_VQ_use_pretrained_feature_as_GT_4096_codes_add_loss_z \
-         --log_dir output/stage1_random_4_pe_EMA_VQ_use_pretrained_feature_as_GT_4096_codes_add_loss_z/logs/ \
+         --epochs 100 --lr 1e-3 --min_lr 1e-5 --warmup_epochs 0 \
+         --output_dir output/stage1_random_4_pe_EMA_VQ_use_pretrained_feature_as_GT_2048_codes_same_sample_index \
+         --log_dir output/stage1_random_4_pe_EMA_VQ_use_pretrained_feature_as_GT_2048_codes_same_sample_index/logs/ \
          --model vqpc_256_1024_1024 \
          --data_path ./data/PU1K/train/pu1k_poisson_256_poisson_1024_pc_2500_patch50_addpugan.h5 \
          --batch_size 16 --num_workers 6 \
