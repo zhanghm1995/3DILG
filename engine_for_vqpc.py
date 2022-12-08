@@ -28,22 +28,23 @@ import numpy as np
 from pu_metrics import compute_cd_hd_distance
 
 
-def train_batch(model, input_pc, gt_pc, radius, stage='stage1', loss='only_vq', use_VQ=True):
+def train_batch(model, input_pc, gt_pc, radius, stage='stage1', loss='only_fine_loss', use_VQ=True):
     # idx = pointnet2_utils.furthest_point_sample(gt_pc, 512)
     # gt_pc_FPS_512 = pointnet2_utils.gather_operation(gt_pc.permute(0, 2, 1).contiguous(), idx)
     # gt_pc_FPS_512 = gt_pc_FPS_512.permute(0, 2, 1).contiguous()
     if stage == 'stage1':
         if use_VQ:
-            loss_vq = model(gt_pc)
+            pred, loss_vq, loss_pretrain = model(gt_pc)
         else:
             pred = model(gt_pc)
         if loss == 'only_fine_loss':
             if use_VQ:
                 fine_cd_dist, fine_hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
                 # fine_emd_loss = 100.0 * compute_emd_loss(p3_pred, gt_pc, radius)
-                # loss_vq = loss_vq
-                loss = loss_vq + fine_cd_dist + fine_hd_value
-                return loss, loss_vq.item(), fine_cd_dist.item(), fine_hd_value.item()
+                loss_vq = loss_vq
+                loss_pretrain = 0.1 * loss_pretrain
+                loss = loss_vq + loss_pretrain + fine_cd_dist + fine_hd_value
+                return loss, loss_vq.item(), loss_pretrain.item(), fine_cd_dist.item(), fine_hd_value.item()
             else:
                 fine_cd_dist, fine_hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
                 loss = fine_cd_dist + fine_hd_value
@@ -145,7 +146,7 @@ def train_one_epoch(model: torch.nn.Module,
                         if use_VQ:
                             # loss, loss_vq, fine_cd_dist, fine_hd_value = train_batch(model, gt_data, gt_data,
                             #                                                          radius_data, stage)
-                            loss, loss_vq = train_batch_new(model, gt_data, gt_data, radius_data, stage)
+                            loss, loss_vq, loss_pretrain, fine_cd_dist, fine_hd_value = train_batch(model, gt_data, gt_data, radius_data, stage)
                         else:
                             loss, fine_cd_dist, fine_hd_value = train_batch(model, gt_data, gt_data, radius_data, stage)
                     else:
@@ -192,8 +193,10 @@ def train_one_epoch(model: torch.nn.Module,
             metric_logger.update(loss_coarse_hd=coarse_hd_value)
             metric_logger.update(loss_fine_emd=fine_emd_loss)
 
-        # metric_logger.update(loss_fine_cd=fine_cd_dist)
-        # metric_logger.update(loss_fine_hd=fine_hd_value)
+        metric_logger.update(loss_fine_cd=fine_cd_dist)
+        metric_logger.update(loss_fine_hd=fine_hd_value)
+        metric_logger.update(loss_pretrain=loss_pretrain)
+
 
         if use_VQ:
             # metric_logger.update(loss_z=loss_z)
@@ -224,8 +227,10 @@ def train_one_epoch(model: torch.nn.Module,
                 log_writer.update(coarse_cd_dist=coarse_cd_dist, head="loss")
                 log_writer.update(coarse_hd_value=coarse_hd_value, head="loss")
                 log_writer.update(fine_emd_loss=fine_emd_loss, head="loss")
-            # log_writer.update(fine_cd_dist=fine_cd_dist, head="loss")
-            # log_writer.update(fine_hd_value=fine_hd_value, head="loss")
+            log_writer.update(fine_cd_dist=fine_cd_dist, head="loss")
+            log_writer.update(fine_hd_value=fine_hd_value, head="loss")
+            log_writer.update(loss_pretrain=loss_pretrain, head="loss")
+
             log_writer.update(lr=max_lr, head="opt")
             log_writer.update(min_lr=min_lr, head="opt")
             log_writer.update(weight_decay=weight_decay_value, head="opt")

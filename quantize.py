@@ -571,9 +571,9 @@ class EMAVectorQuantizer(nn.Module):
             # compute loss for embedding
             loss1 = self.beta*torch.mean((z_q.detach() - z) ** 2) # 0.25
             loss2 = torch.mean((z_q - z.detach()) ** 2)
-            loss3 = 0.02*torch.mean((z - z_e_x_GT) ** 2)
+            # loss_pretrain = torch.mean((z - z_e_x_GT) ** 2)
             # print(loss1, loss2, loss3)
-            loss_vq = loss1 + loss2 + loss3
+            loss_vq = loss1 + loss2
             # loss_vq = self.beta * torch.mean((z_q.detach() - z) ** 2) + \
             #           torch.mean((z_q - z.detach()) ** 2) + \
             #           self.beta * torch.mean((z - z_e_x_GT) ** 2)
@@ -583,17 +583,16 @@ class EMAVectorQuantizer(nn.Module):
             # loss_z = F.mse_loss(z, z_e_x_GT)
         else:
             loss = self.beta * F.mse_loss(z_q.detach(), z)
-        if pretrained_GT:
-            # preserve gradients
-            z_q = z + (z_q - z).detach()  # -z_e_x_GT
-        else:
-            z_q = z + (z_q - z).detach()
 
+        # preserve gradients
+        z_q = z + (z_q - z).detach()
+
+        loss_pretrain = torch.mean((z_q - z_e_x_GT) ** 2)
         # reshape back to match original input shape
         # z_q, 'b h w c -> b c h w'
         # z_q = rearrange(z_q, 'b n c -> b c n')
-        # print(len(encoding_indices.unique()))
-        return z_q, loss_vq, (perplexity, encodings, encoding_indices)
+        print(len(encoding_indices.unique()))
+        return z_q, loss_vq, loss_pretrain, (perplexity, encodings, encoding_indices)
 
     def get_codebook_entry(self, indices, shape):
         # shape specifying (batch, height, width, channel)

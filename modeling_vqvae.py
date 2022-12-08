@@ -1040,8 +1040,8 @@ class PUAutoencoder(nn.Module):
             elif 'decoder' in k:
                 k = k.split('decoder.')[-1]
                 decoder_state_dict[k] = v
-        # self.encoder.load_state_dict(encoder_state_dict)
 
+        self.encoder.load_state_dict(encoder_state_dict)
         self.pretrained_encoder.load_state_dict(encoder_state_dict)  # fix
         self.decoder.load_state_dict(decoder_state_dict)  # fix
 
@@ -1050,8 +1050,8 @@ class PUAutoencoder(nn.Module):
             #     param.requires_grad = False
             for param in self.pretrained_encoder.parameters():
                 param.requires_grad = False
-            for param in self.decoder.parameters():
-                param.requires_grad = False
+            # for param in self.decoder.parameters():
+            #     param.requires_grad = False
         print(f"Load pretrained codebook and decoder from {path}. And fixed their weights")
 
     @torch.jit.ignore
@@ -1075,10 +1075,10 @@ class PUAutoencoder(nn.Module):
 
         centers_quantized = ((centers + 1) / 2 * (bins - 1)).long()
 
-        z_q_x_st, loss_vq, info = self.codebook(z_e_x, z_e_x_GT)  # B x N x C
+        z_q_x_st, loss_vq, loss_pretrain, info = self.codebook(z_e_x, z_e_x_GT)  # B x N x C
         # print('==============After VQ:', z_q_x_st.size())
         perplexity, encodings, encoding_indices = info
-        return z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings
+        return z_e_x, z_q_x_st, centers_quantized, loss_vq, loss_pretrain, perplexity, encodings
 
     def encode_new(self, x, bins=256):
         B, _, _ = x.shape
@@ -1170,12 +1170,12 @@ class PUAutoencoder(nn.Module):
         return input_list, result
 
     def forward(self, x):
-        z_e_x, z_q_x_st, centers_quantized, loss_vq, perplexity, encodings = self.encode(x)
+        z_e_x, z_q_x_st, centers_quantized, loss_vq, loss_pretrain, perplexity, encodings = self.encode(x)
+        centers = centers_quantized.float() / 255.0 * 2 - 1
+        pred = self.decoder(z_q_x_st, centers)
         if self.training:
-            return loss_vq
+            return pred, loss_vq, loss_pretrain
         else:
-            centers = centers_quantized.float() / 255.0 * 2 - 1
-            pred = self.decoder(z_q_x_st, centers)
             return pred  # , loss_z, loss_vq
 
     def forward_wo_VQ(self, x):
@@ -1574,7 +1574,7 @@ def vqvae_512_1024_2048(pretrained=False, **kwargs):
 def vqpc_256_1024_1024(pretrained=True, **kwargs):
     model = PUAutoencoder(
         N=256,
-        K=2048,  # try 2048, 4096
+        K=1024,  # try 2048, 4096
         M=1024,
         path="/mntnfs/cui_data4/yanchengwang/3DILG/output/stage1_random_4_pe_without_VQ_offset_vq_loss_1_pretraining/best_cd.pth",
         **kwargs)
