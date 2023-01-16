@@ -38,5 +38,32 @@ def build_shape_surface_occupancy_dataset(split, args):
         return ShapeNet(args.data_path, split=split, transform=None, sampling=False, return_surface=True, surface_sampling=True, pc_size=args.point_cloud_size)
 
 
+def build_upsampling_dataset(split, args):
+    from pu_dataset import PUGAN_Dataset, xyz_Dataset_Whole, xyz_Pair_Dataset
+
+    if split == 'train':
+        # transform = AxisScaling((0.75, 1.25), True)
+        return PUGAN_Dataset(args.data_path, split=None, isTrain=True)
+    elif split == 'val':
+        # return PUGAN_Dataset(args.data_path, split="./data/train/val.txt", isTrain=False)
+        return xyz_Dataset_Whole(data_dir='./data/test/gt_FPS_8192/', n_input=2048)
+    elif split == 'PUGAN_input_2048':
+        return xyz_Dataset_Whole(data_dir='./data/test/gt_FPS_8192/', n_input=2048)
+    elif split == 'PU1K_input_2048':
+        return xyz_Pair_Dataset(lr_dir='./data/PU1K/test/input_2048/input_2048/', 
+                                gt_dir='./data/PU1K/test/input_2048/gt_8192/', 
+                                n_input=2048)
+    elif split == 'PU1K_input_1024':
+        return xyz_Pair_Dataset(lr_dir="./data/PU1K/test/input_1024/input_1024/", gt_dir="./data/PU1K/test/input_1024/gt_4096/", n_input=1024)
+    elif split == 'PU1K_input_512':
+        return xyz_Pair_Dataset(lr_dir="./data/PU1K/test/input_512/input_512/", gt_dir="./data/PU1K/test/input_512/gt_2048/", n_input=512)
+    elif split == 'PU1K_input_256':
+        return xyz_Pair_Dataset(lr_dir="./data/PU1K/test/input_256/input_256/", gt_dir="./data/PU1K/test/input_256/gt_1024/", n_input=256)
+    elif split == 'PUGAN_input_1024':
+        return xyz_Pair_Dataset(lr_dir="./data/PUGAN/input_1024/", gt_dir="./data/PUGAN/gt_4096/", n_input=1024)
+    else:
+        raise NotImplementedError
+
+
 if __name__ == '__main__':
     pass
