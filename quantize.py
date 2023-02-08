@@ -458,7 +458,7 @@ class VectorQuantizer_PointCloud(nn.Module):
 
 
 class EmbeddingEMA(nn.Module):
-    def __init__(self, num_tokens, codebook_dim, decay=0.99, eps=1e-5):
+    def __init__(self, num_tokens, codebook_dim, decay=0.99, eps=1e-5, update=True):
         super().__init__()
         self.decay = decay
         self.eps = eps
@@ -466,7 +466,7 @@ class EmbeddingEMA(nn.Module):
         self.weight = nn.Parameter(weight, requires_grad=False)
         self.cluster_size = nn.Parameter(torch.zeros(num_tokens), requires_grad=False)
         self.embed_avg = nn.Parameter(weight.clone(), requires_grad=False)
-        self.update = True
+        self.update = update  # True
 
     def forward(self, embed_id):
         return F.embedding(embed_id, self.weight)
@@ -489,12 +489,12 @@ class EmbeddingEMA(nn.Module):
 
 class EMAVectorQuantizer(nn.Module):
     def __init__(self, n_embed, embedding_dim, beta, decay=0.99, eps=1e-5,
-                 remap=None, unknown_index="random"):
+                 remap=None, unknown_index="random", update=True):
         super().__init__()
         self.codebook_dim = embedding_dim  # codebook_dim
         self.num_tokens = n_embed  # num_tokens
         self.beta = beta
-        self.embedding = EmbeddingEMA(self.num_tokens, self.codebook_dim, decay, eps)
+        self.embedding = EmbeddingEMA(self.num_tokens, self.codebook_dim, decay, eps, update=update)
 
         self.remap = remap
         if self.remap is not None:
@@ -533,7 +533,7 @@ class EMAVectorQuantizer(nn.Module):
         back = torch.gather(used[None, :][inds.shape[0] * [0], :], 1, inds)
         return back.reshape(ishape)
 
-    def forward(self, z, z_e_x_GT, pretrained_GT=True):
+    def forward(self, z, z_e_x_GT=None, pretrained_GT=True, stage='stage1'):
         '''
         :param z: torch.Size([B, C, N])
         :return:
@@ -543,7 +543,8 @@ class EMAVectorQuantizer(nn.Module):
 
         # z = rearrange(z, 'b c h w -> b h w c')
         # z = rearrange(z, 'b c n -> b n c')
-
+        # print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+        # print(self.embedding.weight)
         z_flattened = z.reshape(-1, self.codebook_dim)
 
         # distances from z to embeddings e_j (z - e)^2 = z^2 + e^2 - 2 e * z
@@ -552,7 +553,8 @@ class EMAVectorQuantizer(nn.Module):
             torch.einsum('bd,nd->bn', z_flattened, self.embedding.weight)  # 'n d -> d n'
 
         encoding_indices = torch.argmin(d, dim=1)
-
+        # print('++++++++++++++++',d)
+        # print('================', encoding_indices.unique())
         z_q = self.embedding(encoding_indices).view(z.shape)
         encodings = F.one_hot(encoding_indices, self.num_tokens).type(z.dtype)
         avg_probs = torch.mean(encodings, dim=0)
@@ -569,30 +571,36 @@ class EMAVectorQuantizer(nn.Module):
             self.embedding.weight_update(self.num_tokens)
         if pretrained_GT:
             # compute loss for embedding
-            loss1 = self.beta*torch.mean((z_q.detach() - z) ** 2) # 0.25
-            loss2 = torch.mean((z_q - z.detach()) ** 2)
-            # loss_pretrain = torch.mean((z - z_e_x_GT) ** 2)
-            # print(loss1, loss2, loss3)
-            loss_vq = loss1 + loss2
-            # loss_vq = self.beta * torch.mean((z_q.detach() - z) ** 2) + \
-            #           torch.mean((z_q - z.detach()) ** 2) + \
-            #           self.beta * torch.mean((z - z_e_x_GT) ** 2)
+            if stage == 'stage2':
+                loss_vq = torch.mean((z_q.detach() - z) ** 2)
+            else:
+                loss_vq = self.beta * torch.mean((z_q.detach() - z) ** 2) + torch.mean((z_q - z.detach()) ** 2)
 
-            # loss_vq = F.mse_loss(z_q.detach(), z) + self.beta * F.mse_loss(z, z_e_x_GT)
-            # loss_zq = F.mse_loss(z_q, z_e_x_GT) #self.beta *
-            # loss_z = F.mse_loss(z, z_e_x_GT)
+            # # if self.training:
+            # #     loss_pretrain = torch.mean((z - z_e_x_GT) ** 2)
+            # # print(loss1, loss2, loss3)
+            # loss_vq = torch.mean((z_q.detach() - z) ** 2)  # 0.25
+
         else:
-            loss = self.beta * F.mse_loss(z_q.detach(), z)
+            loss_vq = self.beta * F.mse_loss(z_q.detach(), z)
 
         # preserve gradients
         z_q = z + (z_q - z).detach()
-
-        loss_pretrain = torch.mean((z_q - z_e_x_GT) ** 2)
+        if pretrained_GT:
+            if self.training:
+                loss_pretrain = torch.mean((z_q - z_e_x_GT) ** 2)
         # reshape back to match original input shape
         # z_q, 'b h w c -> b c h w'
         # z_q = rearrange(z_q, 'b n c -> b c n')
-        print(len(encoding_indices.unique()))
-        return z_q, loss_vq, loss_pretrain, (perplexity, encodings, encoding_indices)
+
+        # print(len(encoding_indices.unique()))
+        if pretrained_GT:
+            if self.training:
+                return z_q, loss_vq, loss_pretrain, (perplexity, encodings, encoding_indices)
+            else:
+                return z_q, loss_vq, (perplexity, encodings, encoding_indices)
+        else:
+            return z_q, loss_vq, (perplexity, encodings, encoding_indices)
 
     def get_codebook_entry(self, indices, shape):
         # shape specifying (batch, height, width, channel)
@@ -702,7 +710,7 @@ class ori_EMAVectorQuantizer(nn.Module):
         # reshape back to match original input shape
         # z_q, 'b h w c -> b c h w'
         # z_q = rearrange(z_q, 'b n c -> b c n')
-        print(len(encoding_indices.unique()))
+        # print(len(encoding_indices.unique()))
         return z_q, loss, (perplexity, encodings, encoding_indices)
 
     def get_codebook_entry(self, indices, shape):

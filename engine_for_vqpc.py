@@ -20,13 +20,55 @@ import torch.nn.functional as F
 from timm.utils import ModelEma
 
 import utils
-from pu_losses import *
+# from pu_losses import *
 from vis_util import save_xyz_file
 from pointnet2.utils import pointnet2_utils
 from einops import repeat, rearrange
 import numpy as np
 from pu_metrics import compute_cd_hd_distance
+import time
 
+def train_batch_s1_autoencoder(model, input_pc, gt_pc, radius):
+    pred = model(gt_pc)
+    cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
+    loss = cd_dist + hd_value
+    return loss, cd_dist.item(), hd_value.item()
+
+
+def train_batch_s1_VQPC(model, input_pc, gt_pc, radius):
+    pred, loss_vq, loss_pretrain = model(gt_pc)
+    cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
+    loss_pretrain = 0.1 * loss_pretrain
+    loss = cd_dist + hd_value + loss_vq + loss_pretrain
+    return loss, cd_dist.item(), hd_value.item(), loss_vq.item(), loss_pretrain.item()
+
+
+def train_batch_s2_VQPC_old(model, input_pc, gt_pc, radius):
+    pred, loss_vq, loss_pretrain = model(input_pc, gt_pc)
+    cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
+    loss_pretrain = 0.1 * loss_pretrain
+    loss = cd_dist + hd_value + loss_vq + loss_pretrain  # + CE_loss
+    return loss, cd_dist.item(), hd_value.item(), loss_vq.item(), loss_pretrain.item()  # , CE_loss.item()
+
+def train_batch_s2_VQPC_predict(model, input_pc, gt_pc, radius):
+    CE_loss, loss_vq, loss_pretrain = model(input_pc, gt_pc)
+    # cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
+    # loss_pretrain = loss_pretrain #0.1 *
+    # CE_loss = 0.5*CE_loss
+    loss = CE_loss + loss_vq + loss_pretrain #        cd_dist + hd_value +
+    return loss, CE_loss.item(), loss_vq.item(), loss_pretrain.item() #cd_dist.item(), hd_value.item()
+def train_batch_s2_VQPC_NN(model, input_pc, gt_pc, radius):
+    pred, loss_vq, loss_pretrain = model(input_pc, gt_pc)
+    # cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
+    # loss_pretrain = loss_pretrain #0.1 *
+    # CE_loss = 0.5*CE_loss
+    loss = loss_vq + loss_pretrain #        cd_dist + hd_value +
+    return loss, loss_vq.item(), loss_pretrain.item() #cd_dist.item(), hd_value.item()
+def train_batch_s2_VQPC_ablation_no_VQ(model, input_pc, gt_pc, radius):
+    pred = model(input_pc, gt_pc)
+    cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
+    loss = cd_dist + hd_value
+    return loss, cd_dist.item(), hd_value.item()
 
 def train_batch(model, input_pc, gt_pc, radius, stage='stage1', loss='only_fine_loss', use_VQ=True):
     # idx = pointnet2_utils.furthest_point_sample(gt_pc, 512)
@@ -78,28 +120,24 @@ def train_batch(model, input_pc, gt_pc, radius, stage='stage1', loss='only_fine_
                    fine_emd_loss.item(), fine_cd_dist.item(), fine_hd_value.item()
 
     elif stage == 'stage2':
-        pred, loss_vq = model(input_pc)  # coarse_dense_pc
-        cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
+        # CE_loss, loss_vq, loss_pretrain = model(input_pc, gt_pc)  # , loss_pretrain
+        # loss_vq = loss_vq
+        # loss_pretrain = loss_pretrain
+        # CE_loss = 1e-2 * CE_loss
+        # loss = CE_loss + loss_vq + loss_pretrain
+        # return loss, CE_loss.item(), loss_vq.item(), loss_pretrain.item()
+        # pred, loss_vq, loss_pretrain
+        pred, loss_vq, loss_pretrain = model(input_pc, gt_pc)  # , loss_pretrain
+        loss_vq = loss_vq
+        # loss_pretrain = 0.5*loss_pretrain
+        # CE_loss = 1e-5 * CE_loss
+        fine_cd_dist, fine_hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
+        # loss = loss_vq + loss_pretrain + fine_cd_dist + fine_hd_value
+        loss = loss_vq + fine_cd_dist + fine_hd_value
 
-        loss = cd_dist + hd_value + loss_vq
-        return loss, cd_dist.item(), hd_value.item(), loss_vq.item()
+        # return loss, loss_vq.item(), loss_pretrain.item(), fine_cd_dist.item(), fine_hd_value.item()
+        return loss, loss_vq.item(), fine_cd_dist.item(), fine_hd_value.item()
 
-        return loss, cd_dist.item(), hd_value.item(), loss_vq.item()
-
-def train_batch_new(model, input_pc, gt_pc, radius, stage='stage1'):
-    if stage == 'stage1':
-        loss_vq = model(gt_pc)
-        loss = loss_vq
-        return loss, loss_vq.item()
-
-    elif stage == 'stage2':
-        pred, loss_vq = model(input_pc)
-        cd_dist, hd_value = compute_cd_hd_distance(pred, gt_pc, lamda_cd=100, lamda_hd=1)
-
-        loss = cd_dist + hd_value + loss_vq
-        return loss, cd_dist.item(), hd_value.item(), loss_vq.item()
-
-        return loss, cd_dist.item(), hd_value.item(), loss_vq.item()
 
 def train_one_epoch(model: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -141,23 +179,37 @@ def train_one_epoch(model: torch.nn.Module,
             raise NotImplementedError
         else:
             with torch.cuda.amp.autocast(enabled=True):
-                if stage == 'stage1':
-                    if only_fine_loss:
-                        if use_VQ:
-                            # loss, loss_vq, fine_cd_dist, fine_hd_value = train_batch(model, gt_data, gt_data,
-                            #                                                          radius_data, stage)
-                            loss, loss_vq, loss_pretrain, fine_cd_dist, fine_hd_value = train_batch(model, gt_data, gt_data, radius_data, stage)
-                        else:
-                            loss, fine_cd_dist, fine_hd_value = train_batch(model, gt_data, gt_data, radius_data, stage)
-                    else:
-                        loss, p2_pred, p3_pred, loss_vq, \
-                        p1_emd_loss, p1_cd_dist, p1_hd_value, \
-                        coarse_emd_loss, coarse_cd_dist, coarse_hd_value, \
-                        fine_emd_loss, fine_cd_dist, fine_hd_value = \
-                            train_batch(model, gt_data, gt_data, radius_data, stage)
+                if stage == 'autoencoder':
+                    loss, fine_cd_dist, fine_hd_value = train_batch_s1_autoencoder(model, gt_data, gt_data, radius_data)
+                elif stage == 'stage1':
+                    loss, fine_cd_dist, fine_hd_value, loss_vq, loss_pretrain = train_batch_s1_VQPC(model, gt_data,
+                                                                                                    gt_data,
+                                                                                                    radius_data)
+                    # if only_fine_loss:
+                    #     if use_VQ:
+                    #         loss, loss_vq, loss_pretrain, fine_cd_dist, fine_hd_value = train_batch_s1_VQPC(model, gt_data,
+                    #                                                                                 gt_data,
+                    #                                                                                 radius_data)
+                    #     else:
+                    #         loss, fine_cd_dist, fine_hd_value = train_batch(model, gt_data, gt_data, radius_data, stage)
+                    # else:
+                    #     loss, p2_pred, p3_pred, loss_vq, \
+                    #     p1_emd_loss, p1_cd_dist, p1_hd_value, \
+                    #     coarse_emd_loss, coarse_cd_dist, coarse_hd_value, \
+                    #     fine_emd_loss, fine_cd_dist, fine_hd_value = \
+                    #         train_batch(model, gt_data, gt_data, radius_data, stage)
                 elif stage == 'stage2':
-                    loss, fine_cd_dist, fine_hd_value, loss_vq = \
-                        train_batch(model, input_data, gt_data, radius_data, stage)
+                    # loss, loss_vq, loss_pretrain, fine_cd_dist, fine_hd_value = \
+                    #     train_batch(model, input_data, gt_data, radius_data, stage)
+                    # loss, fine_cd_dist, fine_hd_value, loss_vq, loss_pretrain = \
+                    #     train_batch_s2_VQPC(model, input_data, gt_data, radius_data)
+
+
+                    loss, CE_loss, loss_vq, loss_pretrain = \
+                        train_batch_s2_VQPC_predict(model, input_data, gt_data, radius_data)
+                    # loss, loss_vq, loss_pretrain = \
+                    #     train_batch_s2_VQPC_NN(model, input_data, gt_data, radius_data)
+                    # loss, cd_dist, hd_value = train_batch_s2_VQPC_ablation_no_VQ(model, input_data, gt_data, radius_data)
 
         loss_value = loss.item()
 
@@ -193,14 +245,18 @@ def train_one_epoch(model: torch.nn.Module,
             metric_logger.update(loss_coarse_hd=coarse_hd_value)
             metric_logger.update(loss_fine_emd=fine_emd_loss)
 
-        metric_logger.update(loss_fine_cd=fine_cd_dist)
-        metric_logger.update(loss_fine_hd=fine_hd_value)
-        metric_logger.update(loss_pretrain=loss_pretrain)
+        # metric_logger.update(loss_fine_cd=fine_cd_dist)
+        # metric_logger.update(loss_fine_hd=fine_hd_value)
 
 
         if use_VQ:
-            # metric_logger.update(loss_z=loss_z)
+        #     # metric_logger.update(loss_z=loss_z)
+            metric_logger.update(loss_pretrain=loss_pretrain)
+            metric_logger.update(loss_ce=CE_loss)
             metric_logger.update(loss_vq=loss_vq)
+        else:
+            metric_logger.update(loss_cd=cd_dist)
+            metric_logger.update(loss_hd=hd_value)
 
         min_lr = 10.
         max_lr = 0.
@@ -227,9 +283,9 @@ def train_one_epoch(model: torch.nn.Module,
                 log_writer.update(coarse_cd_dist=coarse_cd_dist, head="loss")
                 log_writer.update(coarse_hd_value=coarse_hd_value, head="loss")
                 log_writer.update(fine_emd_loss=fine_emd_loss, head="loss")
-            log_writer.update(fine_cd_dist=fine_cd_dist, head="loss")
-            log_writer.update(fine_hd_value=fine_hd_value, head="loss")
-            log_writer.update(loss_pretrain=loss_pretrain, head="loss")
+            # log_writer.update(fine_cd_dist=fine_cd_dist, head="loss")
+            # log_writer.update(fine_hd_value=fine_hd_value, head="loss")
+
 
             log_writer.update(lr=max_lr, head="opt")
             log_writer.update(min_lr=min_lr, head="opt")
@@ -240,8 +296,12 @@ def train_one_epoch(model: torch.nn.Module,
             # if stage == 'stage1':
             # log_writer.update(loss_uni=uniform_loss, head="opt")
             if use_VQ:
-                # log_writer.update(loss_z=loss_z, head="loss")
+                log_writer.update(loss_pretrain=loss_pretrain, head="loss")
+                log_writer.update(CE_loss=CE_loss, head="loss")
                 log_writer.update(loss_vq=loss_vq, head="loss")
+            else:
+                log_writer.update(loss_cd=cd_dist, head="loss")
+                log_writer.update(loss_hd=hd_value, head="loss")
 
             # elif stage == 'stage2':
             #     log_writer.update(pre_emd_loss=pre_emd_loss, head="loss")
@@ -332,8 +392,9 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_e
     if epoch % 5 == 0:
         os.makedirs(output_dir, exist_ok=True)
     for batch in metric_logger.log_every(data_loader, 200, header):
+        time_start = time.time()
         points, normalized_points_GT, normalized_points_LR, furthest_dist, centroid, name = batch
-
+        print(points.size())
         ori_GT = points.float().to(device, non_blocking=True).contiguous()
         normalized_points_GT = normalized_points_GT.float().to(device, non_blocking=True).contiguous()
         normalized_points_LR = normalized_points_LR.float().to(device,
@@ -341,8 +402,9 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_e
         furthest_dist = furthest_dist.float().to(device, non_blocking=True).contiguous()
         centroid = centroid.float().to(device, non_blocking=True).contiguous()
 
+
         with torch.cuda.amp.autocast():
-            if stage == 'stage1':
+            if stage == 'stage1' or stage == 'autoencoder':
                 input_list, pred_pc = model.pc_prediction(normalized_points_GT)
             elif stage == 'stage2':
                 input_list, pred_pc = model.pc_prediction(normalized_points_LR, stage='stage2')
@@ -360,6 +422,8 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_e
             hd_list.append(hd_value.data.cpu().numpy())
 
             pred = pred.data.cpu().numpy()
+            time_end = time.time()
+            print('time cost', time_end - time_start, 's')
             if epoch % 5 == 0:
                 for i in range(batch_size):
                     save_pred_fp = osp.join(output_dir, name[i] + '.xyz')
@@ -380,8 +444,12 @@ def test(epoch, log_dir, data_loader, model, device, best_cd, best_hd, best_cd_e
     metric_logger.update(mean_hd=torch.tensor(mean_hd))
     metric_logger.update(best_hd=torch.tensor(best_hd))
     # metric_logger.update(best_hd_epoch=torch.tensor(best_hd_epoch))
-    print('Epoch {}: Current cd is {}. Best cd is {} @ epoch {}.'.format(epoch, mean_cd, best_cd, best_cd_epoch))
-    print('Epoch {}: Current hd is {}. Best hd is {} @ epoch {}.'.format(epoch, mean_hd, best_hd, best_hd_epoch))
+    # print('Epoch {}: Current cd is {}. Best cd is {} @ epoch {}.'.format(epoch, np.around(mean_cd, decimals=3), np.around(best_cd, decimals=3), best_cd_epoch))
+    # print('Epoch {}: Current hd is {}. Best hd is {} @ epoch {}.'.format(epoch, np.around(mean_cd, decimals=3), np.around(best_cd, decimals=3), best_hd_epoch))
+    print('Epoch {}: Current cd is {}. Best cd is {} @ epoch {}.'.format(epoch, mean_cd,
+                                                                         best_cd, best_cd_epoch))
+    print('Epoch {}: Current hd is {}. Best hd is {} @ epoch {}.'.format(epoch, mean_hd,
+                                                                         best_hd, best_hd_epoch))
     metric_logger.synchronize_between_processes()
 
     return {k: meter.global_avg for k, meter in

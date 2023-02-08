@@ -1,0 +1,29 @@
+ninja_required_version = 1.3
+cxx = /cm/shared/apps/gcc6/6.5.0/bin/g++
+nvcc = /cm/shared/apps/cuda11.3/toolkit/11.3.0/bin/nvcc
+
+cflags = -Wsign-compare -DNDEBUG -g -fwrapv -O3 -Wall -Wstrict-prototypes -fPIC -I. -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/lib/python3.7/site-packages/torch/include -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/lib/python3.7/site-packages/torch/include/torch/csrc/api/include -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/lib/python3.7/site-packages/torch/include/TH -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/lib/python3.7/site-packages/torch/include/THC -I/cm/shared/apps/cuda11.3/toolkit/11.3.0/include -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/include/python3.7m -c
+post_cflags = -g -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1011"' -DTORCH_EXTENSION_NAME=sampling -D_GLIBCXX_USE_CXX11_ABI=0 -std=c++14
+cuda_cflags = -I. -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/lib/python3.7/site-packages/torch/include -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/lib/python3.7/site-packages/torch/include/torch/csrc/api/include -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/lib/python3.7/site-packages/torch/include/TH -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/lib/python3.7/site-packages/torch/include/THC -I/cm/shared/apps/cuda11.3/toolkit/11.3.0/include -I/mntnfs/cui_data4/yanchengwang/miniconda3/envs/zwb/include/python3.7m -c
+cuda_post_cflags = -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr --compiler-options ''"'"'-fPIC'"'"'' -O2 -DTORCH_API_INCLUDE_EXTENSION_H '-DPYBIND11_COMPILER_TYPE="_gcc"' '-DPYBIND11_STDLIB="_libstdcpp"' '-DPYBIND11_BUILD_ABI="_cxxabi1011"' -DTORCH_EXTENSION_NAME=sampling -D_GLIBCXX_USE_CXX11_ABI=0 -gencode=arch=compute_80,code=compute_80 -gencode=arch=compute_80,code=sm_80 -ccbin /cm/shared/apps/gcc6/6.5.0/bin/gcc -std=c++14
+ldflags = 
+
+rule compile
+  command = $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags
+  depfile = $out.d
+  deps = gcc
+
+rule cuda_compile
+  depfile = $out.d
+  deps = gcc
+  command = $nvcc  $cuda_cflags -c $in -o $out $cuda_post_cflags
+
+
+
+build /mntnfs/cui_data4/yanchengwang/3DILG/dis_pu/sampling/build/temp.linux-x86_64-3.7/sampling.o: compile /mntnfs/cui_data4/yanchengwang/3DILG/dis_pu/sampling/sampling.cpp
+build /mntnfs/cui_data4/yanchengwang/3DILG/dis_pu/sampling/build/temp.linux-x86_64-3.7/sampling_cuda.o: cuda_compile /mntnfs/cui_data4/yanchengwang/3DILG/dis_pu/sampling/sampling_cuda.cu
+
+
+
+
+

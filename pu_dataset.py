@@ -330,11 +330,18 @@ class xyz_Pair_Dataset(data.Dataset):
         super().__init__()
         self.raw_input_points = n_input * 4
         self.n_input = n_input
-
-        file_list = os.listdir(lr_dir)
+        # file_list = listdir(lr_dir)
+        file_list = []
+        import glob
+        self.lr_sample_path = glob.glob(os.path.join(lr_dir, '*.xyz'))
+        for lr_sample in self.lr_sample_path:
+            file_list.append(lr_sample.split('/')[-1])
         self.names = [x[:-4] for x in file_list]
-        self.lr_sample_path = [os.path.join(lr_dir, x) for x in file_list]
+
         self.gt_sample_path = [os.path.join(gt_dir, x) for x in file_list]
+        # self.lr_sample_path = [os.path.join(lr_dir, x) for x in file_list]
+        # self.gt_sample_path = [os.path.join(gt_dir, x) for x in file_list]
+
 
     def __len__(self):
         return len(self.names)
